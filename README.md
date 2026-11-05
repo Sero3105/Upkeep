@@ -87,10 +87,11 @@ and every command available as plain CLI with `--json` output.
 | --- | --- | :---: | :---: |
 | Homebrew formulae & casks | `brew info` / `brew outdated` (JSON), dependency graph | ✅ | — |
 | Mac App Store | [`mas`](https://github.com/mas-cli/mas) | ✅ | — |
-| macOS, security updates, Xcode CLT | `softwareupdate --list` | manual¹ | — |
-| Self-updating apps (Sparkle) | the app's own appcast feed, HTTPS only | manual² | — |
+| macOS, security updates, Xcode CLT | `softwareupdate --list` | ✅ sudo¹ | — |
+| **Any app in /Applications**, even installed by hand | the vendor's Sparkle feed, else the Homebrew cask catalog | ✅ verified² | ✅ |
+| Microsoft Office, Edge, Teams | Microsoft AutoUpdate (`msupdate`) | ✅ | — |
 | npm · pnpm (global) | `outdated --json` | ✅ | ✅ |
-| pip | `pip list --outdated` (PEP 668 aware) | ✅ / manual | ✅ |
+| pip | `pip list --outdated` (Homebrew Python included, rated MED) | ✅ | ✅ |
 | uv tools | `uv tool list --outdated` | ✅ | ✅ |
 | cargo-installed crates | crates.io API | ✅ | ✅ |
 | RubyGems · Composer (global) | `gem outdated` · `composer global outdated` | ✅ | ✅ |
@@ -99,8 +100,8 @@ and every command available as plain CLI with `--json` output.
 | CLI tools: git, gh, claude, docker, code, cmake, terraform… | `--version` + which installer owns the binary | via their owner | — |
 | Docker | Desktop version, engine, images | inventory | — |
 
-<sub>¹ needs admin rights and often a restart: Upkeep shows the exact command.
-² installed through the vendor's signed updater.
+<sub>¹ you type your password at the normal `sudo` prompt; Upkeep never restarts the Mac, it tells you when to.
+² installed only if the download has the same bundle id, a valid signature **from the same developer (Team ID)** as the installed app, and passes Gatekeeper/notarization. The previous version is kept for rollback.
 ³ every installed version is listed separately (Java 17, 21 and 25 are three entries); none is ever removed.</sub>
 
 ## Install
@@ -115,8 +116,12 @@ cd upkeep
 upkeep doctor                                    # checks the installation
 ```
 
-`PREFIX=/usr/local/bin ./install.sh` installs elsewhere. `upkeep self-update` pulls,
-rebuilds and swaps the binary atomically. `./install.sh --uninstall` removes it and keeps your data.
+`PREFIX=/usr/local/bin ./install.sh` installs elsewhere. `./install.sh --uninstall` removes it and keeps your data.
+
+**Upkeep updates itself.** On launch it checks whether its source directory changed or the
+git upstream has new commits (fetched at most every 6 hours). If so, it rebuilds, swaps the
+binary atomically and re-runs your command. If the build fails it keeps the current version.
+Turn it off in Settings → *Auto-update Upkeep*, or update on demand with `upkeep self-update`.
 
 ## Usage
 
@@ -221,15 +226,16 @@ pub trait Provider: Send + Sync {
 
 - **No update without explicit confirmation.** There is no `--yes`; high-risk steps
   need a second, specific confirmation.
-- **No hidden `sudo`.** In the TUI, commands run without a controlling terminal, so a
-  password prompt fails cleanly instead of hijacking the screen. Steps that need admin
-  rights are skipped there; run `upkeep update` in a terminal to approve them yourself.
+- **`sudo` only with your password, after your confirmation.** Steps that need it run in
+  the normal terminal where you type the password as usual (the TUI pauses and resumes).
+  Everything else runs without a controlling terminal, so nothing can prompt behind your back.
 - **Nothing is deleted.** Old runtime versions, Docker images, volumes and containers
   stay. Cleanups such as `brew autoremove` or `docker image prune` are only suggested in Health.
 - **Your projects are off-limits.** Project dependencies and virtual environments are
   never modified. pip is skipped entirely inside `VIRTUAL_ENV` / `CONDA_PREFIX`.
-- **Official channels only.** Package managers, the App Store, Apple, and vendor HTTPS
-  appcasts. Upkeep never downloads an installer itself.
+- **Official channels, verified.** Package managers, the App Store, Apple, Microsoft
+  AutoUpdate, vendor HTTPS feeds and the Homebrew cask catalog (vendor URLs, sha256).
+  An app is replaced only by a build signed by the same developer as the one you have.
 - **Honest status.** Each update is *supported*, *manual* or *not verifiable*. After a
   run each step is *success* (verified), *unverified*, *failed*, *skipped* or
   *already current*. Every command that changes the system is logged.
@@ -249,7 +255,7 @@ Measured on Apple Silicon, scanning a real developer machine (126 installed item
 ## Development
 
 ```sh
-cargo test                       # 39 tests: mocked commands and temp dirs, nothing is installed
+cargo test                       # 45 tests: mocked commands and temp dirs, nothing is installed
 cargo clippy --all-targets -- -D warnings
 cargo build --release
 ./scripts/screens.sh             # regenerate the README screenshots (demo data, real renderer)
@@ -262,8 +268,10 @@ Data lives in `~/.config/upkeep/` (`config.json`, `history.jsonl`, `last-scan.js
 
 - Homebrew, the App Store, macOS and rustup can't install older versions, so they have
   no rollback. The plan says so before anything runs.
-- Apps with no update channel Upkeep can see (no cask, no App Store receipt, no Sparkle
-  feed) are marked *not verifiable* instead of guessed.
+- Electron apps updating through Squirrel keep their feed inside the app: they are marked
+  *updates itself when opened*. Apps with no channel at all are *not verifiable*, never guessed.
+- macOS may ask you to allow your terminal under **Privacy & Security → App Management**
+  the first time Upkeep replaces an app.
 - Checking whether a Docker image has a newer tag would need a `docker pull`, so it isn't done.
 - Download sizes appear only when the source reports them (macOS updates).
 
