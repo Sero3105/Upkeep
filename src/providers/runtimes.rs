@@ -150,7 +150,9 @@ mod tests {
         let r = Runtimes.scan(&c).unwrap();
         let count = |n: &str| r.installed.iter().filter(|i| i.name == n).count();
         assert_eq!(count("Java"), 3);
-        assert_eq!(count("Python"), 2);
+        // Only the mocked Cellar is hermetic: scan also reads the real
+        // /Library/Frameworks/Python.framework/Versions, which varies by machine.
+        assert_eq!(r.installed.iter().filter(|i| i.name == "Python" && i.source.starts_with("Homebrew")).count(), 2);
         assert_eq!(count("Node.js"), 1, "nodenv is not node");
         let _ = std::fs::remove_dir_all(&tmp);
     }
