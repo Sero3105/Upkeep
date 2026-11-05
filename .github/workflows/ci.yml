@@ -1,0 +1,13 @@
+name: CI
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup component add clippy
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+        env:
+          UPKEEP_HOME: ${{ runner.temp }}/upkeep
+      - run: cargo build --release && ls -lh target/release/upkeep
