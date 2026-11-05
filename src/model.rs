@@ -101,6 +101,9 @@ pub struct Update {
     pub is_self_update: bool,
     /// Language runtime: version jumps can break projects.
     pub is_runtime: bool,
+    /// Homebrew cask token, when known: lets the engine drop duplicates between providers.
+    #[serde(default)]
+    pub cask: Option<String>,
 }
 
 impl Update {

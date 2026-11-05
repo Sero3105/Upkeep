@@ -70,10 +70,17 @@ pub fn merge(snap: &mut Snapshot, cfg: &config::Config) {
             cask_apps.insert(i.name.clone());
         }
     }
-    // Same app reported by brew and by its Sparkle feed: keep the brew one (Upkeep can run it).
-    let brew_casks: HashSet<String> = snap.updates.iter().filter(|u| u.source == "Homebrew cask").map(|u| u.name.clone()).collect();
-    if !brew_casks.is_empty() {
-        snap.updates.retain(|u| !(u.provider == "apps" && cask_apps.contains(&u.name)));
+    // Same app reported by the Homebrew provider and by the apps provider: keep Homebrew's.
+    let brew_casks: HashSet<String> = snap.updates.iter().filter(|u| u.provider == "homebrew" && u.source == "Homebrew cask").map(|u| u.name.clone()).collect();
+    snap.updates.retain(|u| {
+        u.provider != "apps" || !(u.cask.as_ref().is_some_and(|c| brew_casks.contains(c)) || (u.cask.is_none() && cask_apps.contains(&u.name) && !brew_casks.is_empty()))
+    });
+    // A source offering an *older* version (e.g. a reverted formula) is not an update: never run it.
+    for u in snap.updates.iter_mut().filter(|u| crate::version::is_newer(&u.current, &u.latest)) {
+        u.support = Support::Manual;
+        u.command = None;
+        u.notes.push("downgrade offered by the source".into());
+        u.hint = Some(format!("Installed {} is newer than what {} ships now ({}): usually a reverted package. Nothing to do.", u.current, u.source, u.latest));
     }
     let before = snap.updates.len();
     snap.updates.retain(|u| !cfg.is_excluded(&u.id(), &u.name));
@@ -101,14 +108,18 @@ mod tests {
         snap.installed.push(Installed { name: "google-chrome".into(), provider: "homebrew".into(), source: "Homebrew cask".into(), path: Some("/Applications/Google Chrome.app".into()), ..Default::default() });
         snap.installed.push(Installed { name: "Google Chrome".into(), provider: "apps".into(), source: "manual".into(), path: Some("/Applications/Google Chrome.app".into()), note: Some("update not verifiable".into()), ..Default::default() });
         snap.updates.push(Update { name: "google-chrome".into(), provider: "homebrew".into(), source: "Homebrew cask".into(), ..Default::default() });
-        snap.updates.push(Update { name: "Google Chrome".into(), provider: "apps".into(), ..Default::default() });
+        snap.updates.push(Update { name: "Google Chrome".into(), provider: "apps".into(), cask: Some("google-chrome".into()), ..Default::default() });
+        snap.updates.push(Update { name: "Slack".into(), provider: "apps".into(), cask: Some("slack".into()), ..Default::default() });
         snap.updates.push(Update { name: "node".into(), provider: "homebrew".into(), ..Default::default() });
+        snap.updates.push(Update { name: "openssl@3".into(), provider: "homebrew".into(), current: "3.6.4".into(), latest: "3.5.9".into(), support: Support::Supported, command: Some(vec!["brew".into()]), ..Default::default() });
         let cfg = config::Config { excluded: vec!["homebrew:node".into()], ..Default::default() };
         merge(&mut snap, &cfg);
         assert_eq!(snap.installed[1].source, "Homebrew cask");
         assert_eq!(snap.unverifiable(), 0);
-        assert_eq!(snap.updates.len(), 1);
+        assert_eq!(snap.updates.len(), 3, "chrome deduped, slack kept, openssl kept as manual");
         assert_eq!(snap.updates[0].name, "google-chrome");
+        let ossl = snap.updates.iter().find(|u| u.name == "openssl@3").unwrap();
+        assert!(ossl.support == Support::Manual && ossl.command.is_none(), "downgrades are never executable");
         assert_eq!(snap.excluded, 1);
     }
 }
