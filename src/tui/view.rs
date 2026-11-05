@@ -594,8 +594,8 @@ fn help(f: &mut Frame, area: Rect) {
         ("Smart", "enter execute · h include high-risk · esc back · while running: s skip/stop · x abort"),
         ("Settings", "space toggle provider/option · excluded items: space to include again"),
         ("", ""),
-        ("Safety", "Nothing runs without confirmation. sudo is never used from the TUI:"),
-        ("", "admin steps are skipped here; run `upkeep update` in a terminal for them."),
+        ("Safety", "Nothing runs without confirmation. Steps needing sudo pause the TUI"),
+        ("", "and run in the terminal, where you type your password as usual."),
     ];
     let lines: Vec<Line> = rows.iter().map(|(a, b)| Line::from(vec![fg(format!("{a:<10}"), ACCENT), Span::raw(*b)])).collect();
     let r = centered(area, 104, lines.len() as u16 + 2);
@@ -618,8 +618,8 @@ fn modal(f: &mut Frame, area: Rect, app: &App) {
             if no_rb > 0 {
                 b.push(Line::from(fg(format!("{no_rb} of them cannot be rolled back."), WARN)));
             }
-            if plan.admin() > 0 {
-                b.push(Line::from(fg("Admin steps will be skipped (no sudo inside the TUI).", WARN)));
+            if steps.iter().any(|s| s.update.requires_admin) {
+                b.push(Line::from(fg("Needs sudo: the TUI will pause and you type your password in the terminal.", WARN)));
             }
             ("Confirm", b)
         }

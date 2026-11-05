@@ -10,7 +10,7 @@ use crate::executor::{self, Control, Event as ExecEvent, Outcome};
 use crate::health::{self, Report};
 use crate::history::{History, Record};
 use crate::model::*;
-use crate::planner::{self, Plan, Risk, Step};
+use crate::planner::{self, Plan, Step};
 use crate::providers::{self, Provider};
 use crate::shell::Ctx;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -147,6 +147,8 @@ pub struct App {
     pub help: bool,
     pub status: Option<(String, Instant)>,
     pub tick: usize,
+    /// Terminal content was lost (TUI suspended): repaint everything.
+    redraw: bool,
     tx: mpsc::Sender<Msg>,
     rx: mpsc::Receiver<Msg>,
     quit: bool,
@@ -162,6 +164,9 @@ pub fn run(cfg: Config) -> i32 {
     let mut term = ratatui::init();
     let mut result = 0;
     while !app.quit {
+        if std::mem::take(&mut app.redraw) {
+            let _ = term.clear();
+        }
         if let Err(e) = term.draw(|f| view::draw(f, &mut app)) {
             result = 1;
             config::log(&format!("draw error: {e}"));
@@ -224,6 +229,7 @@ impl App {
             help: false,
             status: None,
             tick: 0,
+            redraw: false,
             tx,
             rx,
             quit: false,
@@ -358,7 +364,8 @@ impl App {
         let mut v = vec![
             ("Parallel execution".to_string(), c.parallel, "Run different package managers at once (never two ops on one manager)".to_string()),
             ("Refresh indexes".to_string(), c.refresh_indexes, "`brew update` before checking (metadata only)".to_string()),
-            ("Check Sparkle appcasts".to_string(), c.check_appcasts, "Read vendor update feeds of self-updating apps (HTTPS)".to_string()),
+            ("Check app updates online".to_string(), c.check_appcasts, "Vendor Sparkle feeds + Homebrew cask catalog (HTTPS, daily cache)".to_string()),
+            ("Auto-update Upkeep".to_string(), c.auto_self_update, "Rebuild itself on launch when its sources or git upstream change".to_string()),
         ];
         for p in self.reg.iter() {
             v.push((format!("Provider: {}", p.name()), c.enabled(p.id()), format!("id `{}`", p.id())));
@@ -542,16 +549,11 @@ impl App {
                 Self::nav(&mut self.ustate, KeyCode::Down, n);
             }
             KeyCode::Char('a') => {
-                // "Compatible" = Upkeep can run it here without a password and it is not high-risk.
-                let ids: Vec<String> = self
-                    .visible_updates()
-                    .iter()
-                    .filter(|u| u.support == Support::Supported && !u.requires_admin && planner::assess(u).0 != Risk::High)
-                    .map(|u| u.id())
-                    .collect();
+                // Everything Upkeep can run; high-risk steps still need their own confirmation in the plan.
+                let ids: Vec<String> = self.visible_updates().iter().filter(|u| u.support == Support::Supported).map(|u| u.id()).collect();
                 let n = ids.len();
                 self.sel.extend(ids);
-                self.flash(format!("Selected {n} compatible updates (high-risk and admin ones must be picked by hand)."));
+                self.flash(format!("Selected {n} updates. High-risk ones need a separate confirmation in Smart Update (h)."));
             }
             KeyCode::Char('n') => self.sel.clear(),
             KeyCode::Char('/') => self.input = Some(InputTarget::Updates),
@@ -727,6 +729,9 @@ impl App {
     fn start_exec(&mut self) {
         let Some(plan) = &self.plan else { return };
         let steps = plan.executable(self.include_high);
+        if steps.iter().any(|s| s.update.requires_admin) {
+            return self.run_suspended(steps);
+        }
         let control = Arc::new(Control::default());
         self.exec = Some(Exec {
             outcomes: vec![None; steps.len()],
@@ -749,6 +754,36 @@ impl App {
         });
     }
 
+    /// sudo needs the real terminal: leave the TUI, run the plan with normal password prompts, come back.
+    fn run_suspended(&mut self, steps: Vec<Step>) {
+        use ratatui::crossterm::{execute, terminal};
+        let started = Instant::now();
+        ratatui::restore();
+        println!("\n◆ Upkeep — {} step(s) need your administrator password: running them here.\n", steps.iter().filter(|s| s.update.requires_admin).count());
+        let out = crate::cli::run_in_terminal(&self.ctx, &self.reg, &steps);
+        crate::cli::report(&steps, &out);
+        print!("\nPress Enter to return to Upkeep… ");
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+        let _ = std::io::stdin().read_line(&mut String::new());
+        let _ = terminal::enable_raw_mode();
+        let _ = execute!(std::io::stdout(), terminal::EnterAlternateScreen);
+        self.redraw = true;
+        let log = steps.iter().zip(&out).map(|(s, o)| format!("■ {}: {}", s.update.name, o.detail())).collect();
+        self.exec = Some(Exec {
+            outcomes: out.into_iter().map(Some).collect(),
+            steps,
+            running: HashSet::new(),
+            log,
+            control: Arc::new(Control::default()),
+            done: true,
+            started,
+            elapsed: started.elapsed(),
+            state: ListState::default().with_selected(Some(0)),
+        });
+        self.hist = History::open().load().0;
+        self.flash("Updates finished: report ready. Enter = rescan.");
+    }
+
     fn settings_key(&mut self, k: KeyEvent) {
         let rows = self.settings_rows();
         let mut ts = TableState::default().with_selected(self.sstate.selected());
@@ -766,8 +801,9 @@ impl App {
             0 => c.parallel = !c.parallel,
             1 => c.refresh_indexes = !c.refresh_indexes,
             2 => c.check_appcasts = !c.check_appcasts,
-            i if i < 3 + np => {
-                let id = self.reg[i - 3].id().to_string();
+            3 => c.auto_self_update = !c.auto_self_update,
+            i if i < 4 + np => {
+                let id = self.reg[i - 4].id().to_string();
                 if c.enabled(&id) {
                     c.disabled_providers.push(id);
                 } else {
@@ -775,7 +811,7 @@ impl App {
                 }
             }
             i => {
-                let e = i - 3 - np;
+                let e = i - 4 - np;
                 if e < c.excluded.len() {
                     c.excluded.remove(e);
                     let n = rows.len() - 1;
@@ -865,7 +901,7 @@ mod tests {
         let mut app = sample();
         app.tab = Tab::Updates;
         app.key(KeyEvent::from(KeyCode::Char('a')));
-        assert_eq!(app.sel.len(), 1, "only gh: openjdk is high-risk, macOS is manual");
+        assert_eq!(app.sel.len(), 2, "gh + openjdk (high-risk: confirmed later in the plan); macOS is manual here");
     }
 }
 

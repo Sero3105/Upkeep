@@ -447,7 +447,18 @@ pub fn update(cfg: Config, args: &Args) -> i32 {
         println!("Cancelled: nothing changed.");
         return 0;
     }
+    let out = run_in_terminal(&ctx, &reg, &steps);
+    report(&steps, &out)
+}
+
+/// Run steps in the plain terminal: live output, `sudo` asks for your password the normal way,
+/// Ctrl-C stops after the current step.
+pub fn run_in_terminal(ctx: &Ctx, reg: &[Box<dyn Provider>], steps: &[planner::Step]) -> Vec<Outcome> {
+    executor::INTERRUPTED.store(false, std::sync::atomic::Ordering::SeqCst);
     unsafe { libc::signal(libc::SIGINT, on_sigint as *const () as libc::sighandler_t) };
+    if steps.iter().any(|s| s.update.requires_admin) {
+        println!("{}", yellow("Some steps use sudo: type your password when asked."));
+    }
     println!("{}", dim("Ctrl-C stops after the current step."));
     let names: Vec<String> = steps.iter().map(|s| s.update.name.clone()).collect();
     let n = steps.len();
@@ -456,8 +467,9 @@ pub fn update(cfg: Config, args: &Args) -> i32 {
         Event::Line(_, l) => println!("    {}", dim(l)),
         Event::Finished(i, o) => println!("  {} {} — {}", icon(&o), names[i], o.detail()),
     };
-    let out = executor::execute(&ctx, &reg, &steps, true, &Control::default(), &History::open(), &events);
-    report(&names, &out)
+    let out = executor::execute(ctx, reg, steps, true, &Control::default(), &History::open(), &events);
+    unsafe { libc::signal(libc::SIGINT, libc::SIG_DFL) };
+    out
 }
 
 fn icon(o: &Outcome) -> String {
@@ -471,7 +483,8 @@ fn icon(o: &Outcome) -> String {
     }
 }
 
-fn report(names: &[String], out: &[Outcome]) -> i32 {
+pub fn report(steps: &[planner::Step], out: &[Outcome]) -> i32 {
+    let names: Vec<String> = steps.iter().map(|s| s.update.name.clone()).collect();
     let c = |k: &str| out.iter().filter(|o| o.key() == k).count();
     println!(
         "\n{}  {} updated · {} unverified · {} already current · {} failed · {} skipped · {} not run",
@@ -485,6 +498,9 @@ fn report(names: &[String], out: &[Outcome]) -> i32 {
     );
     for (n, o) in names.iter().zip(out).filter(|(_, o)| !matches!(o, Outcome::Success(_) | Outcome::AlreadyCurrent(_))) {
         println!("  {} {n}: {}", icon(o), o.detail());
+    }
+    if steps.iter().zip(out).any(|(s, o)| s.update.requires_restart && matches!(o, Outcome::Success(_) | Outcome::Unverified(_))) {
+        println!("{}", yellow("⟳ Restart the Mac to finish installing the system update(s). Upkeep never restarts it for you."));
     }
     println!("{}", dim("Saved to history: `upkeep history`."));
     i32::from(c("failed") > 0)
@@ -513,7 +529,7 @@ pub fn doctor(cfg: Config) -> i32 {
     line(bad == 0, "history", format!("{} records, {bad} unreadable lines", recs.len()));
     line(std::io::stdout().is_terminal(), "terminal", format!("TERM={}", std::env::var("TERM").unwrap_or_default()));
     let src = std::fs::read_to_string(config::path(config::SOURCE)).unwrap_or_default();
-    line(!src.trim().is_empty(), "self-update source", if src.trim().is_empty() { "not recorded (install with install.sh)".into() } else { src.trim().to_string() });
+    line(!src.trim().is_empty(), "self-update source", if src.trim().is_empty() { "not recorded (install with install.sh)".into() } else { format!("{} (auto-update {})", src.trim(), if cfg.auto_self_update { "on" } else { "off" }) });
     println!("\n{}", bold("Providers"));
     for p in providers::registry() {
         let en = cfg.enabled(p.id());

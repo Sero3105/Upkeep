@@ -215,6 +215,7 @@ fn run_step(
         match provider.and_then(|p| p.installed_version(ctx, &u.name)) {
             Some(v) if !version::is_newer(&u.latest, &v) => Outcome::Success(v),
             Some(v) if v != u.current => Outcome::Unverified(format!("now {v}, expected {}", u.latest)),
+            Some(v) if u.requires_restart => Outcome::Unverified(format!("installed: restart the Mac to finish (still {v} until then)")),
             Some(v) => Outcome::Unverified(format!("command succeeded but version is still {v}")),
             None => Outcome::Unverified("exit code 0; version could not be re-checked".into()),
         }

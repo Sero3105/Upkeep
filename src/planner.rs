@@ -40,6 +40,9 @@ pub fn assess(u: &Update) -> (Risk, Vec<String>) {
     if u.dependents.len() >= 5 {
         raise(Risk::Medium, format!("{} installed packages depend on it", u.dependents.len()), &mut risk);
     }
+    if u.notes.iter().any(|n| n.contains("externally managed")) {
+        raise(Risk::Medium, "package inside Homebrew's Python (PEP 668): may conflict with Homebrew".into(), &mut risk);
+    }
     if u.notes.iter().any(|n| n.contains("deprecated")) {
         raise(Risk::Medium, "deprecated upstream".into(), &mut risk);
     }
@@ -181,7 +184,7 @@ fn conflicts(plan: &mut Plan) {
         }
     }
     if plan.admin() > 0 {
-        w.push(format!("{} step(s) need an administrator password: inside the TUI they are skipped; run `upkeep update` in a terminal to approve them.", plan.admin()));
+        w.push(format!("{} step(s) need your administrator password: Upkeep runs them in the terminal so you can type it (sudo).", plan.admin()));
     }
     plan.warnings.extend(w);
 }
