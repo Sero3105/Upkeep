@@ -1,0 +1,22 @@
+[package]
+name = "upkeep"
+version = "1.0.0"
+edition = "2024"
+description = "Universal software update & system health manager for macOS"
+license = "MIT"
+readme = "README.md"
+keywords = ["macos", "updates", "homebrew", "tui", "cli"]
+categories = ["command-line-utilities"]
+
+[dependencies]
+libc = "0.2.191"
+ratatui = { version = "0.30.2", default-features = false, features = ["crossterm", "layout-cache"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
