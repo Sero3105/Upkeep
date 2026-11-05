@@ -60,7 +60,7 @@ pub fn parse(v: &Value, externally_managed: bool) -> Vec<Update> {
             let name = p["name"].as_str()?;
             let (cur, new) = (p["version"].as_str()?, p["latest_version"].as_str()?);
             let pin = |ver: &str| argv(&["python3", "-m", "pip", "install", &format!("{name}=={ver}")]);
-            Some(if externally_managed {
+            Some(if externally_managed && name == "pip" {
                 Update {
                     name: name.into(),
                     provider: "pip".into(),
@@ -69,8 +69,24 @@ pub fn parse(v: &Value, externally_managed: bool) -> Vec<Update> {
                     latest: new.into(),
                     source: "pip (externally managed Python)".into(),
                     support: Support::Manual,
-                    hint: Some("This Python is managed by Homebrew/the OS (PEP 668): upgrade it through brew, or install CLI tools with `uv tool`/`pipx`.".into()),
-                    is_self_update: name == "pip",
+                    hint: Some("pip ships with Homebrew's Python: it updates with `brew upgrade python@3.x`.".into()),
+                    is_self_update: true,
+                    ..Default::default()
+                }
+            } else if externally_managed {
+                // Packages you installed into Homebrew's Python yourself (with --break-system-packages).
+                let pin = |ver: &str| argv(&["python3", "-m", "pip", "install", "--break-system-packages", &format!("{name}=={ver}")]);
+                Update {
+                    name: name.into(),
+                    provider: "pip".into(),
+                    category: Category::Packages,
+                    current: cur.into(),
+                    latest: new.into(),
+                    source: "pip (Homebrew Python)".into(),
+                    support: Support::Supported,
+                    command: pin(new),
+                    rollback: pin(cur),
+                    notes: vec!["externally managed Python (PEP 668)".into()],
                     ..Default::default()
                 }
             } else {
@@ -177,7 +193,9 @@ mod tests {
     #[test]
     fn pip_respects_pep668_and_virtualenvs() {
         let v: Value = serde_json::from_str(r#"[{"name": "pip", "version": "26.2.1", "latest_version": "26.3"}, {"name": "rich", "version": "13.0", "latest_version": "14.0"}]"#).unwrap();
-        assert!(parse(&v, true).iter().all(|u| u.support == Support::Manual && u.command.is_none()));
+        let managed = parse(&v, true);
+        assert!(managed[0].support == Support::Manual && managed[0].command.is_none(), "pip itself stays with brew");
+        assert!(managed[1].command.as_ref().unwrap().contains(&"--break-system-packages".to_string()));
         let free = parse(&v, false);
         assert_eq!(free[1].command.as_ref().unwrap().join(" "), "python3 -m pip install rich==14.0");
         assert!(free[0].is_self_update);

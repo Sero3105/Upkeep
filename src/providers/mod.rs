@@ -1,10 +1,12 @@
 //! Providers: one per package manager / software source. Adding a new one = implement
 //! `Provider` and list it in `registry()`; the core never special-cases a provider.
 
-mod apps;
+pub mod apps;
+mod catalog;
 mod docker;
 mod homebrew;
 mod macos;
+mod microsoft;
 mod misc;
 mod node;
 mod python;
@@ -40,6 +42,7 @@ pub fn registry() -> Vec<Box<dyn Provider>> {
         Box::new(homebrew::Homebrew),
         Box::new(apps::Apps),
         Box::new(macos::Mas),
+        Box::new(microsoft::MicrosoftAutoUpdate),
         Box::new(macos::SoftwareUpdate),
         Box::new(node::Npm),
         Box::new(node::Pnpm),

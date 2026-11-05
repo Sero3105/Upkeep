@@ -2,8 +2,8 @@ use super::{Provider, argv};
 use crate::model::*;
 use crate::shell::Ctx;
 
-/// macOS + Apple software via `softwareupdate`. Never installed by Upkeep: always needs admin
-/// rights and often a restart, so it is reported as a manual update with the exact command.
+/// macOS + Apple software via `softwareupdate`. Needs your administrator password (sudo, typed by
+/// you in the terminal) and never restarts the Mac by itself: the report tells you to restart.
 pub struct SoftwareUpdate;
 
 impl Provider for SoftwareUpdate {
@@ -40,6 +40,18 @@ impl Provider for SoftwareUpdate {
         res.updates = parse(&format!("{}\n{}", r.out, r.err), &os);
         Ok(res)
     }
+
+    fn installed_version(&self, ctx: &Ctx, name: &str) -> Option<String> {
+        if name.starts_with("macOS") {
+            // Changes only after the restart that completes the update.
+            return ctx.out(&["sw_vers", "-productVersion"], 10).map(|s| s.trim().to_string());
+        }
+        if name.contains("Command Line Tools") {
+            let info = ctx.out(&["pkgutil", "--pkg-info=com.apple.pkg.CLTools_Executables"], 10)?;
+            return info.lines().find_map(|l| l.strip_prefix("version:")).map(|v| v.trim().to_string());
+        }
+        None
+    }
 }
 
 pub fn parse(text: &str, os_version: &str) -> Vec<Update> {
@@ -64,8 +76,9 @@ pub fn parse(text: &str, os_version: &str) -> Vec<Update> {
                 current: if is_os { os_version.to_string() } else { "installed".into() },
                 latest: field("Version:").unwrap_or_else(|| "?".into()),
                 source: "Apple Software Update".into(),
-                support: Support::Manual,
-                hint: Some(format!("System Settings → General → Software Update, or `sudo softwareupdate --install '{lab}'`")),
+                support: Support::Supported,
+                command: argv(&["sudo", "softwareupdate", "--install", lab]),
+                hint: Some("Alternative: System Settings → General → Software Update.".into()),
                 requires_admin: true,
                 requires_restart: restart,
                 download_size: field("Size:").map(|s| human_kib(&s)),
@@ -169,10 +182,11 @@ mod tests {
         let u = parse(out, "27.0.1");
         assert_eq!(u.len(), 2);
         assert_eq!((u[0].current.as_str(), u[0].latest.as_str()), ("27.0.1", "27.1"));
-        assert!(u[0].requires_restart && u[0].requires_admin && u[0].support == Support::Manual);
+        assert!(u[0].requires_restart && u[0].requires_admin && u[0].support == Support::Supported);
+        assert_eq!(u[0].command.as_ref().unwrap().join(" "), "sudo softwareupdate --install macOS Golden Gate 27.1-27B50");
         assert_eq!(u[0].download_size.as_deref(), Some("6.9 GB"));
         assert!(!u[1].requires_restart);
-        assert!(u[1].hint.as_ref().unwrap().contains("Command Line Tools for Xcode-27.1"));
+        assert_eq!(u[1].command.as_ref().unwrap()[3], "Command Line Tools for Xcode-27.1");
         assert!(parse("No new software available.", "27.0").is_empty());
     }
 
