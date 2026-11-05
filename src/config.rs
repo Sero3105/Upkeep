@@ -34,6 +34,8 @@ pub struct Config {
     pub check_appcasts: bool,
     /// Per-operation timeout in seconds.
     pub command_timeout: u64,
+    /// Rebuild Upkeep on launch when its sources/upstream changed.
+    pub auto_self_update: bool,
 }
 
 impl Default for Config {
@@ -45,6 +47,7 @@ impl Default for Config {
             refresh_indexes: true,
             check_appcasts: true,
             command_timeout: 1800,
+            auto_self_update: true,
         }
     }
 }

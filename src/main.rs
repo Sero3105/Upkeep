@@ -1,3 +1,4 @@
+mod appinstall;
 mod cli;
 mod config;
 mod engine;
@@ -7,6 +8,7 @@ mod history;
 mod model;
 mod planner;
 mod providers;
+mod selfupdate;
 mod shell;
 mod tui;
 mod version;
@@ -57,8 +59,9 @@ OPTIONS
   -h, --help            Show this help
   -V, --version         Show version
 
-Safety: nothing is installed without explicit confirmation, sudo is never used
-silently, old versions/Docker data/projects/virtualenvs are never removed or modified.
+Safety: nothing is installed without explicit confirmation; sudo runs only after you
+confirm, with your password typed at the normal prompt; apps are replaced only by builds
+signed by the same developer; projects, virtualenvs and Docker data are never touched.
 Data: ~/.config/upkeep (override with UPKEEP_HOME).";
 
 fn parse_args() -> Result<Args, String> {
@@ -104,6 +107,20 @@ fn parse_args() -> Result<Args, String> {
 }
 
 fn main() {
+    // Internal steps run by the executor (not part of the public CLI).
+    let raw: Vec<String> = std::env::args().collect();
+    if let Some(cmd) = raw.get(1).filter(|c| c.starts_with("__")) {
+        let r = match (cmd.as_str(), raw.get(2), raw.get(3)) {
+            ("__app-install", Some(app), Some(src)) => appinstall::install(app, src, raw.get(4).is_some_and(|f| f == "--check")),
+            ("__app-restore", Some(backup), Some(app)) => appinstall::restore(backup, app),
+            _ => Err(format!("bad internal command {cmd}")),
+        };
+        if let Err(e) = r {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+        return;
+    }
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => {
@@ -132,6 +149,9 @@ fn main() {
     };
     if args.no_refresh {
         cfg.refresh_indexes = false;
+    }
+    if !matches!(args.cmd.as_str(), "doctor" | "self-update") {
+        selfupdate::auto(&cfg);
     }
     let code = match args.cmd.as_str() {
         "" => tui::run(cfg),

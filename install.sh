@@ -19,6 +19,8 @@ command -v cargo >/dev/null 2>&1 || { echo "cargo not found. Install Rust: brew 
 
 cargo build --release --locked
 mkdir -p "$PREFIX" "$DATA"
+# Keep the previous binary (manual recovery: mv ~/.local/bin/.upkeep.prev ~/.local/bin/upkeep).
+[ -f "$PREFIX/upkeep" ] && cp -p "$PREFIX/upkeep" "$PREFIX/.upkeep.prev"
 # Copy then rename: replacing a running binary in place is safe this way.
 install -m 755 target/release/upkeep "$PREFIX/.upkeep.new"
 mv -f "$PREFIX/.upkeep.new" "$PREFIX/upkeep"
