@@ -108,6 +108,14 @@ pub fn install(app: &str, source: &str, check_only: bool) -> Result<String, Stri
     let old_build = plist(app, "CFBundleVersion").unwrap_or_default();
     let old_team = team_id(app).ok_or("installed app is not signed by a developer: refusing to replace it automatically")?;
 
+    // Before the download: finding out after fetching gigabytes wastes the wait.
+    if !check_only {
+        let exe = app.join("Contents/MacOS");
+        if Command::new("pgrep").arg("-f").arg(exe.to_string_lossy().as_ref()).stdout(Stdio::null()).status().is_ok_and(|s| s.success()) {
+            return Err(format!("{} is open: quit it and try again", app.file_stem().unwrap_or_default().to_string_lossy()));
+        }
+    }
+
     let mut tmp = Cleanup { dir: std::env::temp_dir().join(format!("upkeep-app-{}", crate::history::new_id())), mount: None };
     std::fs::create_dir_all(&tmp.dir).map_err(|e| e.to_string())?;
     let file = match cask {
@@ -165,10 +173,6 @@ pub fn install(app: &str, source: &str, check_only: bool) -> Result<String, Stri
         return Ok(format!("ready to install {new_ver}"));
     }
 
-    let exe = app.join("Contents/MacOS");
-    if Command::new("pgrep").arg("-f").arg(exe.to_string_lossy().as_ref()).stdout(Stdio::null()).status().is_ok_and(|s| s.success()) {
-        return Err(format!("{} is running: quit it and retry", app.file_stem().unwrap_or_default().to_string_lossy()));
-    }
     let backup = backup_path(&app.to_string_lossy(), &old_ver);
     if let Some(dir) = backup.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
