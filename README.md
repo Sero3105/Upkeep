@@ -45,7 +45,7 @@ admin/restart flags and whether Upkeep can run it or you must do it by hand.
 </td>
 <td width="50%" valign="top">
 
-**Smart Update**<br>
+**Review**<br>
 Pulls in required dependencies, orders steps (dependencies first, package managers
 after the runtimes they run on), rates risk with reasons and asks again for high-risk steps.
 
@@ -53,7 +53,7 @@ after the runtimes they run on), rates risk with reasons and asks again for high
 </tr>
 <tr>
 <td><img src="assets/screens/updates.png" alt="Updates"></td>
-<td><img src="assets/screens/plan.png" alt="Smart Update plan"></td>
+<td><img src="assets/screens/plan.png" alt="Review screen"></td>
 </tr>
 <tr>
 <td width="50%" valign="top">
@@ -65,7 +65,7 @@ re-reading the installed version: an exit code alone is never reported as succes
 </td>
 <td width="50%" valign="top">
 
-**System Health**<br>
+**Health**<br>
 A 0–100 score with Critical / Warning / Info / Healthy findings, each with the cause,
 the risk and a suggested fix. Fixes are suggested, never applied for you.
 
@@ -73,7 +73,7 @@ the risk and a suggested fix. Fixes are suggested, never applied for you.
 </tr>
 <tr>
 <td><img src="assets/screens/exec.png" alt="Execution"></td>
-<td><img src="assets/screens/health.png" alt="System Health"></td>
+<td><img src="assets/screens/health.png" alt="Health screen"></td>
 </tr>
 </table>
 
@@ -150,9 +150,9 @@ upkeep doctor          # verify Upkeep itself
 | --- | --- |
 | Everywhere | `1`–`6` / `Tab` switch section · `r` rescan · `?` help · `q` quit |
 | Updates | `Space` select · `a` select all compatible · `n` clear · `/` search · `c` category · `o` sort · `x` exclude · `Enter` build plan |
-| Smart Update | `Enter` run · `h` include high-risk steps · `Esc` back · while running: `s` skip/stop step, `x` abort |
-| System Health | `f` filter by severity |
-| History | `Enter` details · `R` rollback · `/` search · `f` failed only · `c` category |
+| Review | `Enter` install · `h` include high-risk steps · `Esc` back · while running: `s` skip/stop step, `x` abort |
+| Health | `f` filter by severity |
+| History | `Enter` details · `R` undo · `/` search · `f` failed only · `c` category |
 | Settings | `Space` toggle option, provider or exclusion |
 
 </details>

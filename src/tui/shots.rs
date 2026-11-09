@@ -219,12 +219,12 @@ fn screenshots() {
     shot(&mut app, "updates", "upkeep — Updates");
     app.tab = Tab::Health;
     app.hstate.select(Some(0));
-    shot(&mut app, "health", "upkeep — System Health");
+    shot(&mut app, "health", "upkeep — Health");
     app.tab = Tab::Updates;
     app.make_plan();
-    shot(&mut app, "plan", "upkeep — Smart Update");
+    shot(&mut app, "plan", "upkeep — Review");
     app.start_exec_for_demo();
-    shot(&mut app, "exec", "upkeep — Smart Update");
+    shot(&mut app, "exec", "upkeep — Review");
 }
 
 impl App {

@@ -31,14 +31,14 @@ pub enum Tab {
 }
 
 impl Tab {
-    pub const ALL: [Tab; 6] = [Tab::Dashboard, Tab::Updates, Tab::Health, Tab::History, Tab::Smart, Tab::Settings];
+    pub const ALL: [Tab; 6] = [Tab::Dashboard, Tab::Updates, Tab::Smart, Tab::Health, Tab::History, Tab::Settings];
     pub fn title(self) -> &'static str {
         match self {
-            Tab::Dashboard => "Dashboard",
+            Tab::Dashboard => "Home",
             Tab::Updates => "Updates",
-            Tab::Health => "System Health",
+            Tab::Health => "Health",
             Tab::History => "History",
-            Tab::Smart => "Smart Update",
+            Tab::Smart => "Review",
             Tab::Settings => "Settings",
         }
     }
