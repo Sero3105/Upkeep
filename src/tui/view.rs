@@ -78,7 +78,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         f.render_widget(msg, area);
         return;
     }
-    let [head, body, foot] = Layout::vertical([Constraint::Length(2), Constraint::Min(0), Constraint::Length(1)]).areas(area);
+    let [head, body, foot] = Layout::vertical([Constraint::Length(3), Constraint::Min(0), Constraint::Length(1)]).areas(area);
     header(f, head, app);
     match app.tab {
         Tab::Dashboard => dashboard(f, body, app),
@@ -110,28 +110,70 @@ fn header(f: &mut Frame, area: Rect, app: &App) {
     }
     let mut tabs = vec![Span::raw(" ")];
     for (i, t) in Tab::ALL.iter().enumerate() {
-        let label = format!(" {} {} ", i + 1, if area.width < 100 { t.title().split(' ').next().unwrap_or("") } else { t.title() });
+        let label = format!(" {} {} ", i + 1, t.title());
         tabs.push(if *t == app.tab { Span::styled(label, Style::new().fg(ACCENT).bg(SEL).add_modifier(Modifier::BOLD)) } else { dim(label) });
     }
-    f.render_widget(Paragraph::new(vec![Line::from(l), Line::from(tabs)]), area);
+    f.render_widget(Paragraph::new(vec![Line::from(l), Line::from(tabs), guide(app)]), area);
+}
+
+/// Where you are in Choose → Review → Install (`active` = 3: all done).
+fn stepper(active: usize, hint: &str) -> Line<'static> {
+    let mut l = vec![Span::raw(" ")];
+    for (i, s) in ["Choose", "Review", "Install"].iter().enumerate() {
+        if i > 0 {
+            l.push(dim(" › "));
+        }
+        l.push(match i.cmp(&active) {
+            std::cmp::Ordering::Less => fg(format!("✓ {s}"), OK),
+            std::cmp::Ordering::Equal => bold(format!("● {s}")).fg(ACCENT),
+            std::cmp::Ordering::Greater => dim(format!("○ {s}")),
+        });
+    }
+    l.push(dim(format!("    {hint}")));
+    Line::from(l)
+}
+
+/// One plain sentence: what this screen is for and what to do on it.
+fn guide(app: &App) -> Line<'static> {
+    let plain = |s: &str| Line::from(dim(format!(" {s}")));
+    match app.tab {
+        Tab::Dashboard => plain("Upkeep finds what is out of date on this Mac and installs only what you approve."),
+        Tab::Updates => stepper(0, "Press space on what you want, then enter."),
+        Tab::Smart => match &app.exec {
+            Some(x) if x.done => stepper(3, "Finished. Press enter to check again."),
+            Some(_) => stepper(2, "Installing now. You can skip a step or stop."),
+            None if app.plan.is_some() => stepper(1, "Nothing has changed yet. Press enter, then y, to install."),
+            None => stepper(0, "Choose updates first: press enter to go there."),
+        },
+        Tab::Health => plain("Problems found on this Mac and how to fix them. Upkeep only reports them."),
+        Tab::History => plain("Everything Upkeep has done. Some updates can be undone: select one and press R."),
+        Tab::Settings => plain("Choose what Upkeep looks at. Changes are saved right away."),
+    }
 }
 
 fn footer(f: &mut Frame, area: Rect, app: &App) {
+    if let Some(t) = app.input {
+        let text = if t == InputTarget::Updates { &app.usearch } else { &app.rsearch };
+        let l = vec![Span::raw(" "), bold(format!("Search: {text}▌")).fg(ACCENT), dim("   type to filter · enter keep · esc clear")];
+        f.render_widget(Paragraph::new(Line::from(l)), area);
+        return;
+    }
     if let Some((s, t)) = &app.status
         && t.elapsed().as_secs() < 6 {
             f.render_widget(Paragraph::new(Line::from(vec![fg(" ● ", MAG), Span::raw(s.clone())])), area);
             return;
         }
     let keys: &[(&str, &str)] = match (app.tab, app.input.is_some()) {
-        (_, true) => &[("type", "filter"), ("enter", "done"), ("esc", "clear")],
-        (Tab::Dashboard, _) => &[("1-6", "sections"), ("enter", "updates"), ("r", "rescan"), ("?", "help"), ("q", "quit")],
-        (Tab::Updates, _) => &[("space", "select"), ("a", "all compatible"), ("enter", "plan"), ("/", "search"), ("c", "category"), ("o", "sort"), ("x", "exclude"), ("?", "help")],
-        (Tab::Health, _) => &[("↑↓", "move"), ("f", "severity"), ("r", "re-check"), ("?", "help")],
-        (Tab::History, _) => &[("enter", "details"), ("R", "rollback"), ("/", "search"), ("f", "failed"), ("c", "category"), ("?", "help")],
-        (Tab::Smart, _) if app.exec.as_ref().is_some_and(|e| e.done) => &[("enter", "finish & rescan"), ("↑↓", "move")],
-        (Tab::Smart, _) if app.exec.is_some() => &[("s", "skip/stop step"), ("x", "abort"), ("↑↓", "move")],
-        (Tab::Smart, _) => &[("enter", "execute"), ("h", "include high risk"), ("esc", "back"), ("?", "help")],
-        (Tab::Settings, _) => &[("space", "toggle"), ("r", "rescan"), ("?", "help")],
+        (_, true) => &[],
+        (Tab::Dashboard, _) => &[("enter", "see updates"), ("r", "check again"), ("?", "how it works"), ("q", "quit")],
+        (Tab::Updates, _) => &[("space", "mark"), ("a", "mark all"), ("enter", "review"), ("/", "search"), ("c", "filter"), ("o", "sort"), ("x", "never offer"), ("?", "help")],
+        (Tab::Health, _) => &[("↑↓", "move"), ("f", "filter"), ("r", "check again"), ("?", "help")],
+        (Tab::History, _) => &[("enter", "details"), ("R", "undo"), ("/", "search"), ("f", "failed only"), ("c", "filter"), ("?", "help")],
+        (Tab::Smart, _) if app.exec.as_ref().is_some_and(|e| e.done) => &[("enter", "finish"), ("↑↓", "move")],
+        (Tab::Smart, _) if app.exec.is_some() => &[("s", "skip this one"), ("x", "stop"), ("↑↓", "move")],
+        (Tab::Smart, _) if app.plan.is_none() => &[("enter", "choose updates"), ("?", "help")],
+        (Tab::Smart, _) => &[("enter", "install"), ("h", "include high risk"), ("esc", "back"), ("?", "help")],
+        (Tab::Settings, _) => &[("space", "on/off"), ("r", "check again"), ("?", "help")],
     };
     let mut l = vec![Span::raw(" ")];
     for (k, v) in keys {
@@ -153,7 +195,8 @@ fn dashboard(f: &mut Frame, area: Rect, app: &App) {
     let tools = s.installed.iter().filter(|i| i.category == Category::Tools).count();
     let tool_ups = s.updates.iter().filter(|u| matches!(u.category, Category::Tools | Category::Packages | Category::Homebrew | Category::Runtimes)).count();
     let narrow = area.width < 90;
-    let [cards, info, rest] = Layout::vertical([Constraint::Length(if narrow { 8 } else { 4 }), Constraint::Length(2), Constraint::Min(0)]).areas(area);
+    let [next, cards, info, rest] = Layout::vertical([Constraint::Length(3), Constraint::Length(if narrow { 8 } else { 4 }), Constraint::Length(1), Constraint::Min(0)]).areas(area);
+    f.render_widget(Paragraph::new(next_step(app, auto)).block(panel("Next step").padding(Padding::horizontal(1))), next);
     let cells: Vec<Rect> = if narrow {
         let [a, b] = Layout::vertical([Constraint::Length(4), Constraint::Length(4)]).areas(cards);
         let [a1, a2] = Layout::horizontal([Constraint::Percentage(50); 2]).areas(a);
@@ -162,9 +205,9 @@ fn dashboard(f: &mut Frame, area: Rect, app: &App) {
     } else {
         Layout::horizontal([Constraint::Percentage(25); 4]).split(cards).to_vec()
     };
-    card(f, cells[0], "Updates", s.updates.len().to_string(), if s.updates.is_empty() { OK } else { WARN }, vec![fg(format!("{auto} auto"), OK), dim(" · "), fg(format!("{} manual", s.updates.len() - auto), WARN)]);
-    card(f, cells[1], "Applications", apps.to_string(), ACCENT, vec![dim(format!("{} not verifiable", s.unverifiable()))]);
-    card(f, cells[2], "Dev tools", tools.to_string(), ACCENT, vec![dim(format!("{tool_ups} package/tool updates"))]);
+    card(f, cells[0], "Updates", s.updates.len().to_string(), if s.updates.is_empty() { OK } else { WARN }, vec![fg(format!("{auto} ready"), OK), dim(" · "), fg(format!("{} by hand", s.updates.len() - auto), WARN)]);
+    card(f, cells[1], "Applications", apps.to_string(), ACCENT, vec![dim(format!("{} can't be checked", s.unverifiable()))]);
+    card(f, cells[2], "Dev tools", tools.to_string(), ACCENT, vec![dim(format!("{tool_ups} updates"))]);
     match &app.health {
         Some(h) => {
             let mut sub = bar(h.score as f64 / 100.0, 10, health_color(h.score));
@@ -178,7 +221,7 @@ fn dashboard(f: &mut Frame, area: Rect, app: &App) {
         l.push(dim(format!(" · {} excluded", s.excluded)));
     }
     if !s.warnings.is_empty() {
-        l.push(fg(format!("  ! {} scan warnings (see Health)", s.warnings.len()), WARN));
+        l.push(fg(format!("  ! {} checks had problems (see Health)", s.warnings.len()), WARN));
     }
     f.render_widget(Paragraph::new(Line::from(l)), info);
 
@@ -221,7 +264,35 @@ fn dashboard(f: &mut Frame, area: Rect, app: &App) {
         };
         provs.push(ListItem::new(line));
     }
-    f.render_widget(List::new(provs).block(panel("Providers")), right);
+    f.render_widget(List::new(provs).block(panel("What was checked")), right);
+}
+
+/// The Home call to action, in one line.
+fn next_step(app: &App, ready: usize) -> Line<'static> {
+    let total = app.snap.updates.len();
+    let by_hand = total - ready;
+    let plural = |n: usize| if n == 1 { "update" } else { "updates" };
+    let spin = SPIN[app.tick % 10];
+    if app.busy() {
+        Line::from(fg(format!("{spin} Installing updates: open Review (3) to follow along."), MAG))
+    } else if app.scanning && app.snap.date == 0 {
+        Line::from(fg(format!("{spin} Checking this Mac for the first time. Nothing is changed during a check."), ACCENT))
+    } else if app.scanning {
+        Line::from(fg(format!("{spin} Checking for updates…"), ACCENT))
+    } else if app.snap.date == 0 {
+        Line::from(vec![Span::raw("No check yet. "), dim("Press r to look for updates.")])
+    } else if ready > 0 {
+        let mut l = vec![bold(format!("{ready} {} ready to install", plural(ready))).fg(OK)];
+        if by_hand > 0 {
+            l.push(dim(format!(" · {by_hand} to do by hand")));
+        }
+        l.push(dim("  →  press enter to choose"));
+        Line::from(l)
+    } else if by_hand > 0 {
+        Line::from(vec![bold(format!("{by_hand} {} to do by hand", plural(by_hand))).fg(WARN), dim("  →  press enter to see how")])
+    } else {
+        Line::from(bold("✓ Everything is up to date.").fg(OK))
+    }
 }
 
 fn status_line(st: &ProviderStatus) -> Line<'static> {
@@ -250,7 +321,7 @@ fn updates(f: &mut Frame, area: Rect, app: &mut App) {
             let sel = app.sel.contains(&u.id());
             let mark = if u.support != Support::Supported { dim(" · ") } else if sel { fg("[✓]", OK) } else { dim("[ ]") };
             let (risk, _) = planner::assess(u);
-            let kind = if u.support == Support::Supported { fg("auto", OK) } else { fg("manual", WARN) };
+            let kind = if u.support == Support::Supported { fg("ready", OK) } else { fg("by hand", WARN) };
             let mut cells = vec![
                 Cell::from(Line::from(mark)),
                 Cell::from(u.name.clone()),
@@ -263,7 +334,7 @@ fn updates(f: &mut Frame, area: Rect, app: &mut App) {
             if wide {
                 let mut extra = String::new();
                 if u.requires_admin {
-                    extra.push_str("⚠ admin ");
+                    extra.push_str("⚠ password ");
                 }
                 if u.requires_restart {
                     extra.push_str("⟳ restart ");
@@ -273,7 +344,7 @@ fn updates(f: &mut Frame, area: Rect, app: &mut App) {
             Row::new(cells)
         })
         .collect();
-    let mut widths = vec![Constraint::Length(3), Constraint::Min(16), Constraint::Length(14), Constraint::Length(16), Constraint::Length(5), Constraint::Length(6), Constraint::Length(12)];
+    let mut widths = vec![Constraint::Length(3), Constraint::Min(16), Constraint::Length(14), Constraint::Length(16), Constraint::Length(5), Constraint::Length(7), Constraint::Length(12)];
     if wide {
         widths.push(Constraint::Min(18));
     }
@@ -284,15 +355,15 @@ fn updates(f: &mut Frame, area: Rect, app: &mut App) {
         _ => String::new(),
     };
     let title = format!(
-        "Updates {} · {auto} auto · {} selected · {} · sort {}{search}",
+        "{} available · {auto} ready · {} marked · showing {} · sorted by {}{search}",
         v.len(),
         app.sel.len(),
-        app.ucat.map(|c| c.title()).unwrap_or("all categories"),
+        app.ucat.map(|c| c.title()).unwrap_or("all"),
         app.usort.title()
     );
     let empty = v.is_empty();
     let current = app.ustate.selected().and_then(|i| v.get(i)).map(|u| (*u).clone());
-    let mut header = vec!["", "Name", "Installed", "Available", "Risk", "Kind", "Category"];
+    let mut header = vec!["", "Name", "Installed", "Available", "Risk", "Install", "Category"];
     if wide {
         header.push("Source");
     }
@@ -303,7 +374,7 @@ fn updates(f: &mut Frame, area: Rect, app: &mut App) {
         .block(panel(title));
     f.render_stateful_widget(t, list, &mut app.ustate);
     if empty {
-        let msg = if app.scanning { "Scanning…" } else if app.snap.date == 0 { "No scan yet: press r." } else { "✓ Nothing to update here." };
+        let msg = if app.scanning { "Checking…" } else if app.snap.date == 0 { "No check yet: press r." } else if !app.usearch.is_empty() || app.ucat.is_some() { "No match. Press esc to show everything." } else { "✓ Nothing to update here." };
         f.render_widget(Paragraph::new(fg(msg, OK)), centered(list, msg.chars().count() as u16 + 2, 1));
     }
     if show_detail {
@@ -320,8 +391,8 @@ fn update_detail(f: &mut Frame, area: Rect, u: Option<&Update>) {
     let na = || dim("not available");
     let mut lines = vec![
         Line::from(vec![bold(u.name.clone()), dim(format!("  {} → {}  ", u.current, u.latest)), risk_span(risk), dim(format!("  {}", why.join("; ")))]),
-        Line::from(vec![dim("Source: "), Span::raw(u.source.clone()), dim("   Download: "), u.download_size.clone().map(Span::raw).unwrap_or_else(na), dim("   Admin: "), if u.requires_admin { fg("yes", ERR) } else { Span::raw("no") }, dim("   Restart: "), if u.requires_restart { fg("yes", ERR) } else { Span::raw("no") }]),
-        Line::from(vec![dim("Rollback: "), if u.rollback.is_some() { fg("supported", OK) } else { fg("not available", WARN) }, dim("   Status: "), if u.support == Support::Supported { fg("supported by Upkeep", OK) } else { fg("manual update", WARN) }]),
+        Line::from(vec![dim("Source: "), Span::raw(u.source.clone()), dim("   Download: "), u.download_size.clone().map(Span::raw).unwrap_or_else(na), dim("   Password: "), if u.requires_admin { fg("yes", ERR) } else { Span::raw("no") }, dim("   Restart: "), if u.requires_restart { fg("yes", ERR) } else { Span::raw("no") }]),
+        Line::from(vec![dim("Can be undone: "), if u.rollback.is_some() { fg("yes", OK) } else { fg("no", WARN) }, dim("   Install: "), if u.support == Support::Supported { fg("Upkeep does it for you", OK) } else { fg("you do it by hand (see below)", WARN) }]),
     ];
     if !u.dependencies.is_empty() {
         lines.push(Line::from(vec![dim("Depends on: "), Span::raw(u.dependencies.join(", "))]));
@@ -415,14 +486,14 @@ fn history(f: &mut Frame, area: Rect, app: &mut App) {
         app.rcat.map(|c| format!(" · {}", c.title())).unwrap_or_default()
     );
     let empty = v.is_empty();
-    let t = Table::new(rows, [Constraint::Length(16), Constraint::Min(16), Constraint::Length(28), Constraint::Length(12), Constraint::Length(10), Constraint::Length(2), Constraint::Length(5)])
-        .header(Row::new(vec!["Date", "Software", "Version", "Outcome", "Manager", "", "Time"]).style(Style::new().fg(DIM)))
+    let t = Table::new(rows, [Constraint::Length(16), Constraint::Min(16), Constraint::Length(28), Constraint::Length(12), Constraint::Length(10), Constraint::Length(4), Constraint::Length(5)])
+        .header(Row::new(vec!["Date", "Software", "Version", "Outcome", "Manager", "Undo", "Time"]).style(Style::new().fg(DIM)))
         .row_highlight_style(Style::new().bg(SEL))
         .highlight_symbol("▌")
         .block(panel(title));
     f.render_stateful_widget(t, area, &mut app.rstate);
     if empty {
-        let msg = "No operations recorded yet.";
+        let msg = "Nothing yet: updates you install will be listed here.";
         f.render_widget(Paragraph::new(dim(msg)), centered(area, msg.len() as u16 + 2, 1));
     }
 }
@@ -438,7 +509,7 @@ fn detail(f: &mut Frame, area: Rect, app: &App) {
         Line::from(vec![dim("Command:    "), Span::raw(r.command.join(" "))]),
         Line::from(vec![dim("Outcome:    "), outcome_span(&r.outcome), Span::raw(format!("  {}", r.detail.clone().unwrap_or_default()))]),
         Line::from(vec![dim("Duration:   "), Span::raw(format!("{:.1}s", r.duration))]),
-        Line::from(vec![dim("Rollback:   "), r.rollback.as_ref().map(|c| fg(c.join(" "), OK)).unwrap_or_else(|| fg("not supported", WARN))]),
+        Line::from(vec![dim("Undo with:  "), r.rollback.as_ref().map(|c| fg(c.join(" "), OK)).unwrap_or_else(|| fg("can't be undone", WARN))]),
     ];
     if !prev.is_empty() {
         lines.push(Line::from(vec![dim("Previous:   "), Span::raw(prev.join(", "))]));
@@ -450,7 +521,7 @@ fn detail(f: &mut Frame, area: Rect, app: &App) {
     let p = Paragraph::new(Text::from(lines))
         .wrap(Wrap { trim: false })
         .scroll((app.dscroll, 0))
-        .block(panel("Operation details").title_bottom(Line::from(dim(" ↑↓ scroll · R rollback · any key close "))));
+        .block(panel("Operation details").title_bottom(Line::from(dim(" ↑↓ scroll · R undo · any key close "))));
     f.render_widget(p, box_);
 }
 
@@ -460,64 +531,60 @@ fn smart(f: &mut Frame, area: Rect, app: &mut App) {
     }
     let Some(plan) = app.plan.clone() else {
         let t = vec![
-            Line::from(bold("No plan yet")),
+            Line::from(bold("Nothing to review yet")),
             Line::from(""),
-            Line::from(dim("1. Open Updates (2) and select items with space, or press a for all compatible ones.")),
-            Line::from(dim("2. Press enter: Upkeep resolves dependencies, orders the steps and rates the risk.")),
-            Line::from(dim("3. Review, then confirm. Nothing runs without your explicit confirmation.")),
+            Line::from(dim("1. Go to Updates (press enter) and mark what you want with space.")),
+            Line::from(dim("2. Press enter there: Upkeep lists what it will do, in the safest order, here.")),
+            Line::from(dim("3. Read the list and confirm. Nothing is installed before that.")),
         ];
-        f.render_widget(Paragraph::new(t).block(panel("Smart Update")), area);
+        f.render_widget(Paragraph::new(t).block(panel("Review")), area);
         return;
     };
     let warn_h = if plan.warnings.is_empty() && plan.manual.is_empty() { 0 } else { (plan.warnings.len() + plan.manual.len() + 2).min(8) as u16 };
     let [top, list, warn] = Layout::vertical([Constraint::Length(3), Constraint::Min(4), Constraint::Length(warn_h)]).areas(area);
     let exec_n = plan.executable(app.include_high).len();
-    let summary = Line::from(vec![
-        bold(format!(" {} steps ", plan.steps.len())),
-        dim(format!("· {} stages · ", plan.stages())),
-        fg(format!("{} high risk", plan.high_risk()), if plan.high_risk() > 0 { ERR } else { DIM }),
-        dim(" · "),
-        fg(format!("{} need admin", plan.admin()), if plan.admin() > 0 { WARN } else { DIM }),
-        dim(format!(" · {} with rollback · ", plan.with_rollback())),
-        if app.include_high { fg("high risk INCLUDED", ERR) } else { dim("high risk excluded (h)") },
-        dim(" → "),
-        fg(format!("{exec_n} will run"), OK),
-    ]);
-    f.render_widget(Paragraph::new(summary).block(panel("Update Plan")), top);
+    let mut summary = vec![bold(format!(" {exec_n} will be installed")).fg(OK), dim(format!(" · {} can be undone", plan.with_rollback()))];
+    if plan.admin() > 0 {
+        summary.push(fg(format!(" · {} ask for your password", plan.admin()), WARN));
+    }
+    if plan.high_risk() > 0 {
+        summary.push(if app.include_high { fg(format!(" · {} high-risk included", plan.high_risk()), ERR) } else { fg(format!(" · {} high-risk left out (h to include)", plan.high_risk()), WARN) });
+    }
+    f.render_widget(Paragraph::new(Line::from(summary)).block(panel("What will happen")), top);
     let mut last = None;
     let rows: Vec<Row> = plan
         .steps
         .iter()
         .map(|s| {
             let lane = (s.stage, s.update.provider.clone());
-            let stage = if last.as_ref() != Some(&lane) { fg(format!("{}·{}", s.stage + 1, s.update.provider), ACCENT) } else { dim("") };
+            let stage = if last.as_ref() != Some(&lane) { fg(s.update.provider.clone(), ACCENT) } else { dim("") };
             last = Some(lane);
             let skipped = s.risk == Risk::High && !app.include_high;
             let mut why = s.reasons.join("; ");
             if let Some(by) = &s.linked_by {
                 why = format!("needed by {by}; {why}");
             }
-            let name = if skipped { dim(format!("{} (excluded)", s.update.name)) } else { Span::raw(s.update.name.clone()) };
+            let name = if skipped { dim(format!("{} (left out)", s.update.name)) } else { Span::raw(s.update.name.clone()) };
             Row::new(vec![
                 Cell::from(Line::from(stage)),
                 Cell::from(Line::from(risk_span(s.risk))),
                 Cell::from(Line::from(name)),
                 Cell::from(Line::from(vec![dim(s.update.current.clone()), dim(" → "), Span::raw(s.update.latest.clone())])),
-                Cell::from(Line::from(if s.update.rollback.is_some() { fg("↺", OK) } else { dim("✗") })),
-                Cell::from(Line::from(vec![if s.update.requires_admin { fg("⚠ admin ", ERR) } else { Span::raw("") }, dim(why)])),
+                Cell::from(Line::from(if s.update.rollback.is_some() { fg("yes", OK) } else { dim("no") })),
+                Cell::from(Line::from(vec![if s.update.requires_admin { fg("⚠ password ", ERR) } else { Span::raw("") }, dim(why)])),
             ])
         })
         .collect();
-    let t = Table::new(rows, [Constraint::Length(14), Constraint::Length(5), Constraint::Length(24), Constraint::Length(24), Constraint::Length(2), Constraint::Min(30)])
-        .header(Row::new(vec!["Stage", "Risk", "Package", "Version", "↺", "Why"]).style(Style::new().fg(DIM)))
+    let t = Table::new(rows, [Constraint::Length(14), Constraint::Length(5), Constraint::Length(24), Constraint::Length(24), Constraint::Length(4), Constraint::Min(30)])
+        .header(Row::new(vec!["Using", "Risk", "Package", "Version", "Undo", "Why this risk"]).style(Style::new().fg(DIM)))
         .row_highlight_style(Style::new().bg(SEL))
         .highlight_symbol("▌")
-        .block(panel("Ordered steps (same stage: different managers may run in parallel)"));
+        .block(panel("Steps, in the order they will run"));
     f.render_stateful_widget(t, list, &mut app.pstate);
     if warn_h > 0 {
         let mut l: Vec<Line> = plan.warnings.iter().map(|w| Line::from(vec![fg("! ", WARN), Span::raw(w.clone())])).collect();
         l.extend(plan.manual.iter().map(|u| Line::from(vec![fg("✋ ", WARN), bold(u.name.clone()), dim(format!(" {} → {}  ", u.current, u.latest)), dim(u.hint.clone().unwrap_or_default())])));
-        f.render_widget(Paragraph::new(l).wrap(Wrap { trim: true }).block(panel("Notes & manual steps")), warn);
+        f.render_widget(Paragraph::new(l).wrap(Wrap { trim: true }).block(panel("Good to know")), warn);
     }
 }
 
@@ -542,15 +609,16 @@ fn exec_view(f: &mut Frame, area: Rect, app: &mut App) {
     let elapsed = if x.done { x.elapsed } else { x.started.elapsed() };
     let [top, mid] = Layout::vertical([Constraint::Length(3), Constraint::Min(4)]).areas(area);
     let mut g = vec![bold(format!(" {finished}/{total} ")), dim(format!("{:.0}s  ", elapsed.as_secs_f64()))];
-    g.extend(bar(finished as f64 / total.max(1) as f64, (top.width as usize).saturating_sub(30).min(60), if x.done { OK } else { MAG }));
     if x.done {
         let c = |k: &str| x.outcomes.iter().flatten().filter(|o| o.key() == k).count();
-        g.push(Span::raw("  "));
-        g.extend([fg(format!("✓ {} ", c("success")), OK), fg(format!("≈ {} ", c("unverified")), WARN), dim(format!("= {} ", c("already-current"))), fg(format!("✗ {} ", c("failed")), ERR), fg(format!("↷ {} ", c("skipped")), WARN), dim(format!("· {}", c("not-run")))]);
-    } else if x.control.aborted() {
+        g.extend([fg(format!("✓ {} updated  ", c("success")), OK), fg(format!("≈ {} to check  ", c("unverified")), WARN), dim(format!("= {} already current  ", c("already-current"))), fg(format!("✗ {} failed  ", c("failed")), ERR), fg(format!("↷ {} skipped  ", c("skipped")), WARN), dim(format!("· {} not run", c("not-run")))]);
+    } else {
+        g.extend(bar(finished as f64 / total.max(1) as f64, (top.width as usize).saturating_sub(30).min(60), MAG));
+    }
+    if !x.done && x.control.aborted() {
         g.push(fg("  stopping after current step…", WARN));
     }
-    f.render_widget(Paragraph::new(Line::from(g)).block(panel(if x.done { "Report" } else { "Executing" })), top);
+    f.render_widget(Paragraph::new(Line::from(g)).block(panel(if x.done { "Finished" } else { "Installing" })), top);
     let [steps, log] = if mid.width >= 110 { Layout::horizontal([Constraint::Percentage(45), Constraint::Percentage(55)]).areas(mid) } else { Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(mid) };
     let items: Vec<ListItem> = x
         .steps
@@ -586,21 +654,30 @@ fn settings(f: &mut Frame, area: Rect, app: &mut App) {
 }
 
 fn help(f: &mut Frame, area: Rect) {
-    let rows = [
-        ("Global", "1-6 / tab  sections · r rescan · ? help · q quit"),
-        ("Updates", "space select · a all compatible · n none · / search · c category · o sort · x exclude · enter plan"),
-        ("Health", "f filter by severity · ↑↓ details"),
-        ("History", "enter details · R rollback · / search · f failed only · c category"),
-        ("Smart", "enter execute · h include high-risk · esc back · while running: s skip/stop · x abort"),
-        ("Settings", "space toggle provider/option · excluded items: space to include again"),
-        ("", ""),
-        ("Safety", "Nothing runs without confirmation. Steps needing sudo pause the TUI"),
-        ("", "and run in the terminal, where you type your password as usual."),
+    let head = |s: &str| Line::from(bold(s.to_string()).fg(ACCENT));
+    let row = |a: &str, b: &str| Line::from(vec![fg(format!("  {a:<13}"), OK), Span::raw(b.to_string())]);
+    let lines = vec![
+        head("How Upkeep works"),
+        row("1 Choose", "Updates tab: press space on what you want (a marks all), then enter."),
+        row("2 Review", "See exactly what will be installed, in what order. Nothing has changed yet."),
+        row("3 Install", "Enter, then y. If a password is needed, you type it in the terminal."),
+        Line::from(""),
+        head("What the words mean"),
+        row("ready", "Upkeep can install it for you."),
+        row("by hand", "Upkeep can't: select it to read how to do it yourself."),
+        row("Risk", "LOW routine · MED read the reason first · HIGH left out unless you press h."),
+        row("Undo", "Puts the previous version back. Not every installer allows it."),
+        Line::from(""),
+        head("Keys"),
+        row("Everywhere", "1-6 or tab change screen · esc back · r check again · ? help · q quit"),
+        row("Updates", "/ search · c filter · o sort · n unmark all · x never offer this one"),
+        row("Review", "h include high risk · esc back · while installing: s skip, x stop"),
+        row("History", "enter details · R undo · / search · f failed only · c filter"),
+        row("Search", "After / just type. Enter keeps the search, esc clears it."),
     ];
-    let lines: Vec<Line> = rows.iter().map(|(a, b)| Line::from(vec![fg(format!("{a:<10}"), ACCENT), Span::raw(*b)])).collect();
-    let r = centered(area, 104, lines.len() as u16 + 2);
+    let r = centered(area, 92, lines.len() as u16 + 2);
     f.render_widget(Clear, r);
-    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }).block(panel("Keys")), r);
+    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }).block(panel("Help").title_bottom(Line::from(dim(" press any key to close ")))), r);
 }
 
 fn modal(f: &mut Frame, area: Rect, app: &App) {
@@ -616,32 +693,32 @@ fn modal(f: &mut Frame, area: Rect, app: &App) {
             }
             let no_rb = steps.iter().filter(|s| s.update.rollback.is_none()).count();
             if no_rb > 0 {
-                b.push(Line::from(fg(format!("{no_rb} of them cannot be rolled back."), WARN)));
+                b.push(Line::from(fg(format!("{no_rb} of them cannot be undone afterwards."), WARN)));
             }
             if steps.iter().any(|s| s.update.requires_admin) {
-                b.push(Line::from(fg("Needs sudo: the TUI will pause and you type your password in the terminal.", WARN)));
+                b.push(Line::from(fg("Some need your password: this screen will pause so you can type it.", WARN)));
             }
             ("Confirm", b)
         }
         Modal::IncludeHigh => {
             let plan = app.plan.as_ref().unwrap();
-            let mut b = vec![Line::from(fg("Include these HIGH-RISK steps?", ERR))];
+            let mut b = vec![Line::from(fg("Also install these high-risk updates?", ERR))];
             b.extend(plan.steps.iter().filter(|s| s.risk == Risk::High).map(|s| Line::from(vec![bold(format!("  {} ", s.update.name)), dim(s.reasons.join("; "))])));
             ("High risk", b)
         }
-        Modal::Abort => ("Abort", vec![Line::from("Stop after the current step? Remaining steps will not run.")]),
-        Modal::Exclude(id) => ("Exclude", vec![Line::from(format!("Never offer updates for `{id}`?")), Line::from(dim("Reversible in Settings."))]),
+        Modal::Abort => ("Stop", vec![Line::from("Stop after the current update? The remaining ones will not be installed.")]),
+        Modal::Exclude(id) => ("Exclude", vec![Line::from(format!("Never offer updates for `{id}`?")), Line::from(dim("You can change your mind in Settings."))]),
         Modal::Rollback(r) => (
-            "Rollback",
+            "Undo",
             vec![
-                Line::from(bold(format!("Roll {} back {} → {}?", r.name, r.to, r.from))),
+                Line::from(bold(format!("Put {} back from {} to {}?", r.name, r.to, r.from))),
                 Line::from(dim(format!("Runs: {}", r.rollback.clone().unwrap_or_default().join(" ")))),
             ],
         ),
-        Modal::Quit => ("Quit", vec![Line::from("Updates are running. Quit and stop after the current step?")]),
+        Modal::Quit => ("Quit", vec![Line::from("Updates are being installed. Quit after the current one?")]),
     };
     body.push(Line::from(""));
-    body.push(Line::from(vec![Span::styled(" y ", Style::new().fg(Color::Black).bg(OK)), dim(" confirm   "), Span::styled(" n ", Style::new().fg(Color::Black).bg(Color::Indexed(245))), dim(" / esc cancel")]));
+    body.push(Line::from(vec![Span::styled(" y ", Style::new().fg(Color::Black).bg(OK)), dim(" yes   "), Span::styled(" n ", Style::new().fg(Color::Black).bg(Color::Indexed(245))), dim(" / esc no")]));
     let r = centered(area, 76, body.len() as u16 + 2);
     f.render_widget(Clear, r);
     f.render_widget(Paragraph::new(body).wrap(Wrap { trim: true }).block(panel(title).border_style(Style::new().fg(WARN))), r);
