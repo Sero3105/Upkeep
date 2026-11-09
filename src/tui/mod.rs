@@ -161,6 +161,8 @@ pub fn run(cfg: Config) -> i32 {
     }
     let mut app = App::new(cfg);
     app.start_scan();
+    // First launch: open on the explanation of how Upkeep works.
+    app.help = app.snap.date == 0;
     let mut term = ratatui::init();
     let mut result = 0;
     while !app.quit {
@@ -315,14 +317,14 @@ impl App {
                         x.elapsed = x.started.elapsed();
                     }
                     self.hist = History::open().load().0;
-                    self.flash("Updates finished: report ready. Enter = rescan.");
+                    self.flash("All done. Press enter to check again.");
                 }
                 Msg::Rollback(r) => {
                     self.rollback_busy = false;
                     self.hist = History::open().load().0;
                     match r {
-                        Ok(rec) => self.flash(format!("Rollback {}: {} ({})", rec.name, rec.outcome, rec.detail.unwrap_or_default())),
-                        Err(e) => self.flash(format!("Rollback failed: {e}")),
+                        Ok(rec) => self.flash(format!("Undo {}: {} ({})", rec.name, rec.outcome, rec.detail.unwrap_or_default())),
+                        Err(e) => self.flash(format!("Undo failed: {e}")),
                     }
                 }
             }
@@ -362,16 +364,16 @@ impl App {
     pub fn settings_rows(&self) -> Vec<(String, bool, String)> {
         let c = &self.ctx.config;
         let mut v = vec![
-            ("Parallel execution".to_string(), c.parallel, "Run different package managers at once (never two ops on one manager)".to_string()),
-            ("Refresh indexes".to_string(), c.refresh_indexes, "`brew update` before checking (metadata only)".to_string()),
-            ("Check app updates online".to_string(), c.check_appcasts, "Vendor Sparkle feeds + Homebrew cask catalog (HTTPS, daily cache)".to_string()),
-            ("Auto-update Upkeep".to_string(), c.auto_self_update, "Rebuild itself on launch when its sources or git upstream change".to_string()),
+            ("Install several at once".to_string(), c.parallel, "Faster: different package managers work at the same time".to_string()),
+            ("Refresh version lists first".to_string(), c.refresh_indexes, "Runs `brew update` before checking; installs nothing".to_string()),
+            ("Check apps online".to_string(), c.check_appcasts, "Ask app vendors and Homebrew for newer versions of your apps".to_string()),
+            ("Keep Upkeep up to date".to_string(), c.auto_self_update, "When Upkeep starts, rebuild it if its source code changed".to_string()),
         ];
         for p in self.reg.iter() {
-            v.push((format!("Provider: {}", p.name()), c.enabled(p.id()), format!("id `{}`", p.id())));
+            v.push((format!("Check {}", p.name()), c.enabled(p.id()), "Look for updates here".to_string()));
         }
         for e in &c.excluded {
-            v.push((format!("Excluded: {e}"), true, "Space = include again".to_string()));
+            v.push((format!("Excluded: {e}"), true, "Never offered. Space = offer it again".to_string()));
         }
         v
     }
@@ -399,7 +401,7 @@ impl App {
                 InputTarget::History => &mut self.rsearch,
             };
             match k.code {
-                KeyCode::Enter => self.input = None,
+                KeyCode::Enter | KeyCode::Down => self.input = None,
                 KeyCode::Esc => {
                     buf.clear();
                     self.input = None;
@@ -447,6 +449,8 @@ impl App {
                 Tab::Dashboard => {
                     if k.code == KeyCode::Enter {
                         self.tab = Tab::Updates;
+                    } else {
+                        self.unknown_key(k);
                     }
                 }
                 Tab::Updates => self.updates_key(k),
@@ -455,6 +459,13 @@ impl App {
                 Tab::Smart => self.smart_key(k),
                 Tab::Settings => self.settings_key(k),
             },
+        }
+    }
+
+    /// A letter that does nothing here must still answer, or it looks like the app is stuck.
+    fn unknown_key(&mut self, k: KeyEvent) {
+        if matches!(k.code, KeyCode::Char(_)) {
+            self.flash("That key does nothing on this screen. Press ? to see what you can do.");
         }
     }
 
@@ -474,6 +485,7 @@ impl App {
         let yes = matches!(k.code, KeyCode::Char('y') | KeyCode::Char('Y'));
         let no = ctrl_c || matches!(k.code, KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Char('q'));
         if !yes && !no {
+            self.flash("Press y for yes or n for no.");
             return;
         }
         let m = self.modal.take().unwrap();
@@ -484,7 +496,7 @@ impl App {
             Modal::Execute => self.start_exec(),
             Modal::IncludeHigh => {
                 self.include_high = true;
-                self.flash("High-risk steps included.");
+                self.flash("High-risk updates will be installed too.");
             }
             Modal::Abort => {
                 if let Some(x) = &self.exec {
@@ -542,7 +554,7 @@ impl App {
             KeyCode::Char(' ') => {
                 let Some(u) = self.current_update() else { return };
                 if u.support != Support::Supported {
-                    self.flash(format!("Manual update: {}", u.hint.unwrap_or_default()));
+                    self.flash(format!("You install this one by hand. {}", u.hint.unwrap_or_default()));
                 } else if !self.sel.remove(&u.id()) {
                     self.sel.insert(u.id());
                 }
@@ -553,26 +565,35 @@ impl App {
                 let ids: Vec<String> = self.visible_updates().iter().filter(|u| u.support == Support::Supported).map(|u| u.id()).collect();
                 let n = ids.len();
                 self.sel.extend(ids);
-                self.flash(format!("Selected {n} updates. High-risk ones need a separate confirmation in Smart Update (h)."));
+                self.flash(format!("Marked {n} updates. Press enter to review them before anything is installed."));
             }
-            KeyCode::Char('n') => self.sel.clear(),
+            KeyCode::Char('n') => {
+                self.sel.clear();
+                self.flash("Nothing is marked now.");
+            }
             KeyCode::Char('/') => self.input = Some(InputTarget::Updates),
             KeyCode::Char('c') => {
                 self.ucat = cycle_cat(self.ucat);
                 self.clamp_updates();
+                self.flash(format!("Showing: {}. Press c for the next one.", self.ucat.map(|c| c.title()).unwrap_or("everything")));
             }
-            KeyCode::Char('o') => self.usort = self.usort.next(),
+            KeyCode::Char('o') => {
+                self.usort = self.usort.next();
+                self.flash(format!("Sorted by {}. Press o for the next order.", self.usort.title()));
+            }
             KeyCode::Char('x') => {
                 if let Some(u) = self.current_update() {
                     self.modal = Some(Modal::Exclude(u.id()));
                 }
             }
             KeyCode::Enter | KeyCode::Char('p') => self.make_plan(),
-            KeyCode::Esc => {
+            KeyCode::Esc if !self.usearch.is_empty() || self.ucat.is_some() => {
                 self.usearch.clear();
                 self.ucat = None;
+                self.flash("Showing everything again.");
             }
-            _ => {}
+            KeyCode::Esc => self.tab = Tab::Dashboard,
+            _ => self.unknown_key(k),
         }
     }
 
@@ -584,8 +605,11 @@ impl App {
         let mut chosen: Vec<Update> = self.snap.updates.iter().filter(|u| self.sel.contains(&u.id())).cloned().collect();
         if chosen.is_empty() {
             match self.current_update() {
-                Some(u) => chosen.push(u),
-                None => return,
+                Some(u) => {
+                    self.flash(format!("Nothing was marked, so this is only {}. Esc to go back.", u.name));
+                    chosen.push(u);
+                }
+                None => return self.flash("There is nothing to review."),
             }
         }
         self.plan = Some(planner::build(&chosen, &self.snap.updates, &self.reg));
@@ -600,15 +624,21 @@ impl App {
         if Self::nav(&mut self.hstate, k.code, n) {
             return;
         }
-        if k.code == KeyCode::Char('f') {
-            self.hsev = match self.hsev {
-                None => Some(Severity::Critical),
-                Some(Severity::Critical) => Some(Severity::Warning),
-                Some(Severity::Warning) => Some(Severity::Info),
-                Some(Severity::Info) => Some(Severity::Healthy),
-                Some(Severity::Healthy) => None,
-            };
-            self.hstate.select(Some(0));
+        match k.code {
+            KeyCode::Char('f') => {
+                self.hsev = match self.hsev {
+                    None => Some(Severity::Critical),
+                    Some(Severity::Critical) => Some(Severity::Warning),
+                    Some(Severity::Warning) => Some(Severity::Info),
+                    Some(Severity::Info) => Some(Severity::Healthy),
+                    Some(Severity::Healthy) => None,
+                };
+                self.hstate.select(Some(0));
+                self.flash(format!("Showing: {}. Press f for the next one.", self.hsev.map(|s| s.title()).unwrap_or("everything")));
+            }
+            KeyCode::Esc if self.hsev.is_some() => self.hsev = None,
+            KeyCode::Esc => self.tab = Tab::Dashboard,
+            _ => self.unknown_key(k),
         }
     }
 
@@ -622,22 +652,26 @@ impl App {
             KeyCode::Char('f') => {
                 self.rfailed = !self.rfailed;
                 self.rstate.select(Some(0));
+                self.flash(if self.rfailed { "Showing failed updates only." } else { "Showing everything." });
             }
             KeyCode::Char('c') => {
                 self.rcat = cycle_cat(self.rcat);
                 self.rstate.select(Some(0));
+                self.flash(format!("Showing: {}. Press c for the next one.", self.rcat.map(|c| c.title()).unwrap_or("everything")));
             }
             KeyCode::Enter => {
                 self.detail = self.visible_history().get(self.rstate.selected().unwrap_or(0)).map(|r| (*r).clone());
                 self.dscroll = 0;
             }
             KeyCode::Char('R') => self.ask_rollback(),
-            KeyCode::Esc => {
+            KeyCode::Esc if !self.rsearch.is_empty() || self.rfailed || self.rcat.is_some() => {
                 self.rsearch.clear();
                 self.rfailed = false;
                 self.rcat = None;
+                self.flash("Showing everything again.");
             }
-            _ => {}
+            KeyCode::Esc => self.tab = Tab::Dashboard,
+            _ => self.unknown_key(k),
         }
     }
 
@@ -647,7 +681,7 @@ impl App {
         if self.busy() {
             self.flash("Busy: wait for the running operation to finish.");
         } else if rec.rollback.is_none() {
-            self.flash(format!("{} ({}): rollback not supported by this package manager.", rec.name, rec.provider));
+            self.flash(format!("{}: this update can't be undone with {}.", rec.name, rec.provider));
         } else {
             self.detail = None;
             self.modal = Some(Modal::Rollback(Box::new(rec)));
@@ -656,7 +690,7 @@ impl App {
 
     fn start_rollback(&mut self, rec: Record) {
         self.rollback_busy = true;
-        self.flash(format!("Rolling back {} to {}…", rec.name, rec.from));
+        self.flash(format!("Undoing: putting {} back to {}…", rec.name, rec.from));
         let (ctx, reg, tx) = (self.ctx.clone(), self.reg.clone(), self.tx.clone());
         std::thread::spawn(move || {
             let r = executor::rollback(&ctx, &reg, &rec, false, &History::open(), &|_| {});
@@ -689,13 +723,15 @@ impl App {
                     self.tab = Tab::Dashboard;
                     self.start_scan();
                 }
-                _ => {}
+                _ => self.unknown_key(k),
             }
             return;
         }
         let Some(plan) = &self.plan else {
-            if k.code == KeyCode::Enter {
+            if matches!(k.code, KeyCode::Enter | KeyCode::Esc) {
                 self.tab = Tab::Updates;
+            } else {
+                self.unknown_key(k);
             }
             return;
         };
@@ -709,11 +745,13 @@ impl App {
                     self.include_high = false;
                 } else if plan.high_risk() > 0 {
                     self.modal = Some(Modal::IncludeHigh);
+                } else {
+                    self.flash("There are no high-risk updates in this list.");
                 }
             }
             KeyCode::Enter | KeyCode::Char('y') => {
                 if plan.executable(self.include_high).is_empty() {
-                    self.flash("Nothing executable: all steps are manual or high-risk (press h).");
+                    self.flash("Nothing to install: only high-risk updates are left. Press h to include them.");
                 } else {
                     self.modal = Some(Modal::Execute);
                 }
@@ -722,7 +760,7 @@ impl App {
                 self.plan = None;
                 self.tab = Tab::Updates;
             }
-            _ => {}
+            _ => self.unknown_key(k),
         }
     }
 
@@ -781,7 +819,7 @@ impl App {
             state: ListState::default().with_selected(Some(0)),
         });
         self.hist = History::open().load().0;
-        self.flash("Updates finished: report ready. Enter = rescan.");
+        self.flash("All done. Press enter to check again.");
     }
 
     fn settings_key(&mut self, k: KeyEvent) {
@@ -791,8 +829,12 @@ impl App {
             self.sstate.select(ts.selected());
             return;
         }
-        if k.code != KeyCode::Char(' ') && k.code != KeyCode::Enter {
+        if k.code == KeyCode::Esc {
+            self.tab = Tab::Dashboard;
             return;
+        }
+        if k.code != KeyCode::Char(' ') && k.code != KeyCode::Enter {
+            return self.unknown_key(k);
         }
         let i = self.sstate.selected().unwrap_or(0);
         let np = self.reg.len();
@@ -820,7 +862,7 @@ impl App {
             }
         }
         self.save_config();
-        self.flash("Saved. Press r to rescan with the new settings.");
+        self.flash("Saved. Press r to check again with the new settings.");
     }
 }
 
@@ -887,6 +929,10 @@ mod tests {
         app.modal = Some(Modal::Execute);
         let s = render(&mut app, 120, 36);
         assert!(s.contains("Run 1 update(s) now?"));
+        app.modal = None;
+        app.help = true;
+        assert!(render(&mut app, 120, 36).contains("How Upkeep works"));
+        app.help = false;
         if std::env::var("UPKEEP_DUMP").is_ok() {
             app.modal = None;
             for tab in [Tab::Dashboard, Tab::Updates, Tab::Smart] {
@@ -894,6 +940,48 @@ mod tests {
                 println!("{}", render(&mut app, 120, 30));
             }
         }
+    }
+
+    #[test]
+    fn main_flow_tabs_are_next_to_each_other_and_home_says_what_to_do() {
+        assert_eq!(Tab::ALL[1..3].iter().map(|t| t.title()).collect::<Vec<_>>(), ["Updates", "Review"]);
+        let mut app = sample();
+        app.tab = Tab::Dashboard;
+        let s = render(&mut app, 120, 36);
+        assert!(s.contains("2 updates ready to install") && s.contains("press enter"), "{s}");
+        app.snap.updates.clear();
+        assert!(render(&mut app, 120, 36).contains("Everything is up to date"));
+    }
+
+    #[test]
+    fn every_input_gets_a_visible_answer() {
+        let press = |app: &mut App, c| app.key(KeyEvent::from(c));
+        let said = |app: &App, s: &str| app.status.as_ref().is_some_and(|(m, _)| m.contains(s));
+        let mut app = sample();
+        app.tab = Tab::Updates;
+        press(&mut app, KeyCode::Char('z'));
+        assert!(said(&app, "does nothing"));
+        // Esc peels back one layer at a time: filter first, then the screen.
+        press(&mut app, KeyCode::Char('c'));
+        assert!(said(&app, "Showing"));
+        press(&mut app, KeyCode::Esc);
+        assert!(app.ucat.is_none() && app.tab == Tab::Updates);
+        press(&mut app, KeyCode::Esc);
+        assert!(app.tab == Tab::Dashboard);
+        // Enter with nothing marked says what it picked.
+        app.tab = Tab::Updates;
+        press(&mut app, KeyCode::Enter);
+        assert!(app.tab == Tab::Smart && said(&app, "Nothing was marked"));
+        // A modal refuses anything but y/n out loud, and never confirms on enter.
+        app.modal = Some(Modal::Execute);
+        press(&mut app, KeyCode::Enter);
+        assert!(app.modal.is_some() && app.exec.is_none() && said(&app, "y for yes"));
+        app.modal = None;
+        // While typing a search, the text is on screen.
+        app.tab = Tab::Updates;
+        press(&mut app, KeyCode::Char('/'));
+        press(&mut app, KeyCode::Char('g'));
+        assert!(render(&mut app, 120, 36).contains("Search: g"));
     }
 
     #[test]
