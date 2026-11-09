@@ -93,7 +93,7 @@ pub fn check(cfg: Config, args: &Args) -> i32 {
     print_updates(&ups);
     let auto = ups.iter().filter(|u| u.support == Support::Supported).count();
     println!(
-        "\n{} {} updates · {} automatic · {} manual{}",
+        "\n{} {} updates · {} ready to install · {} by hand{}",
         bold("Σ"),
         ups.len(),
         green(auto.to_string()),
@@ -120,7 +120,7 @@ fn print_updates(ups: &[&Update]) {
             last = Some(u.category);
         }
         let (risk, _) = planner::assess(u);
-        let kind = if u.support == Support::Supported { green("auto  ") } else { yellow("manual") };
+        let kind = if u.support == Support::Supported { green("ready  ") } else { yellow("by hand") };
         println!(
             "  {:>3}  {} {} {} {}  {} {}{}",
             dim(format!("{}", i + 1)),
@@ -384,9 +384,10 @@ pub fn parse_selection(s: &str, n: usize) -> Result<Vec<usize>, String> {
     let mut out = vec![];
     for tok in s.split([',', ' ']).filter(|t| !t.is_empty()) {
         let (a, b) = tok.split_once('-').unwrap_or((tok, tok));
-        let (a, b): (usize, usize) = (a.parse().map_err(|_| format!("bad selection `{tok}`"))?, b.parse().map_err(|_| format!("bad selection `{tok}`"))?);
+        let unclear = || format!("I didn't understand `{tok}`: use numbers like 1,3-5, or `all`.");
+        let (a, b): (usize, usize) = (a.parse().map_err(|_| unclear())?, b.parse().map_err(|_| unclear())?);
         if a == 0 || b > n || a > b {
-            return Err(format!("`{tok}` out of range 1-{n}"));
+            return Err(format!("`{tok}` is not in the list: use numbers from 1 to {n}."));
         }
         out.extend(a - 1..b);
     }
@@ -414,7 +415,9 @@ pub fn update(cfg: Config, args: &Args) -> i32 {
         return 0;
     }
     let sel = loop {
-        let s = prompt(&format!("\nSelect updates ({} e.g. 1,3-5, {} for all, empty to cancel): ", dim("numbers"), bold("all")));
+        println!("\n{}", bold("Which updates do you want?"));
+        println!("{}", dim("Type the numbers from the list (like 1,3-5), or `all`. Press Enter alone to cancel."));
+        let s = prompt("> ");
         if s.is_empty() {
             println!("Cancelled: nothing changed.");
             return 0;
@@ -436,7 +439,10 @@ pub fn update(cfg: Config, args: &Args) -> i32 {
         for s in plan.steps.iter().filter(|s| s.risk == Risk::High) {
             println!("   • {} — {}", bold(&s.update.name), s.reasons.join("; "));
         }
-        include_high = prompt("Type `yes` to include them (anything else skips them): ") == "yes";
+        include_high = prompt("Type `yes` to install them too (anything else leaves them out): ") == "yes";
+        if !include_high {
+            println!("{}", dim("High-risk updates left out."));
+        }
     }
     let steps = plan.executable(include_high);
     if steps.is_empty() {

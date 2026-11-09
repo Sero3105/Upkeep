@@ -32,6 +32,10 @@ pub struct Args {
 const HELP: &str = "\
 upkeep — universal software update & system health manager for macOS
 
+START HERE
+  upkeep        Open the app: see what is out of date, choose, review, install.
+                Nothing is installed until you confirm. Press ? inside for help.
+
 USAGE
   upkeep [COMMAND] [OPTIONS]
 

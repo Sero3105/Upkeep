@@ -205,10 +205,10 @@ fn updates_summary(snap: &Snapshot) -> Vec<HealthIssue> {
     let n = snap.updates.len();
     out.push(match n {
         0 => HealthIssue::new(Severity::Healthy, "Everything up to date", "Software", "No pending updates found"),
-        1..=20 => HealthIssue::new(Severity::Info, format!("{n} updates available"), "Software", "See the Updates tab").fix("Review and apply from Updates / Smart Update."),
+        1..=20 => HealthIssue::new(Severity::Info, format!("{n} updates available"), "Software", "See the Updates tab").fix("Choose and install them from the Updates screen."),
         _ => HealthIssue::new(Severity::Warning, format!("{n} updates available"), "Software", "Many components are behind")
             .consequence("Large backlogs make each upgrade riskier.")
-            .fix("Apply low-risk updates first from Smart Update."),
+            .fix("Install low-risk updates first, from the Updates screen."),
     });
     out
 }
