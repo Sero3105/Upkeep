@@ -368,6 +368,7 @@ impl App {
             ("Refresh version lists first".to_string(), c.refresh_indexes, "Runs `brew update` before checking; installs nothing".to_string()),
             ("Check apps online".to_string(), c.check_appcasts, "Ask app vendors and Homebrew for newer versions of your apps".to_string()),
             ("Keep Upkeep up to date".to_string(), c.auto_self_update, "When Upkeep starts, rebuild it if its source code changed".to_string()),
+            ("Skip “downloaded from internet” prompt".to_string(), c.strip_quarantine, "After Homebrew updates an app, remove macOS quarantine so it opens without asking (skips that Gatekeeper check)".to_string()),
         ];
         for p in self.reg.iter() {
             v.push((format!("Check {}", p.name()), c.enabled(p.id()), "Look for updates here".to_string()));
@@ -844,8 +845,9 @@ impl App {
             1 => c.refresh_indexes = !c.refresh_indexes,
             2 => c.check_appcasts = !c.check_appcasts,
             3 => c.auto_self_update = !c.auto_self_update,
-            i if i < 4 + np => {
-                let id = self.reg[i - 4].id().to_string();
+            4 => c.strip_quarantine = !c.strip_quarantine,
+            i if i < 5 + np => {
+                let id = self.reg[i - 5].id().to_string();
                 if c.enabled(&id) {
                     c.disabled_providers.push(id);
                 } else {
@@ -853,7 +855,7 @@ impl App {
                 }
             }
             i => {
-                let e = i - 4 - np;
+                let e = i - 5 - np;
                 if e < c.excluded.len() {
                     c.excluded.remove(e);
                     let n = rows.len() - 1;
