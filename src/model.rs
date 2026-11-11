@@ -104,6 +104,9 @@ pub struct Update {
     /// Homebrew cask token, when known: lets the engine drop duplicates between providers.
     #[serde(default)]
     pub cask: Option<String>,
+    /// App bundle a Homebrew cask command (re)installs: quarantine is stripped from it when enabled.
+    #[serde(default)]
+    pub app_path: Option<String>,
 }
 
 impl Update {

@@ -202,6 +202,13 @@ fn run_step(
         },
     );
     control.running.lock().unwrap().remove(&i);
+    if r.status == 0 && ctx.config.strip_quarantine
+        && let Some(app) = &u.app_path {
+            let x = ctx.runner.run(&["xattr", "-dr", "com.apple.quarantine", app], &RunOpts { timeout: Duration::from_secs(60), ..Default::default() });
+            if !x.ok() {
+                config::log(&format!("could not remove quarantine from {app}: {}", x.err.trim()));
+            }
+        }
     rec.duration = started.elapsed().as_secs_f64();
     rec.output_tail = tail.into_inner().unwrap().into();
 
@@ -386,6 +393,24 @@ mod tests {
         let r = rollback(&c, &providers, &rec, false, &h, &|_| {}).unwrap();
         assert_eq!((r.outcome.as_str(), r.operation.as_str(), r.to.as_str()), ("success", "rollback", "1.0"));
         assert!(rollback(&c, &providers, &Record::default(), false, &h, &|_| {}).is_err());
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn strips_quarantine_only_when_enabled_and_command_succeeded() {
+        let m = std::sync::Arc::new(MockRunner::new(&[]).on("fake-ver ok", 0, "1.0").on("fake-ver ok", 0, "2.0").on("fake-up ok", 0, "").on("xattr -dr com.apple.quarantine /Applications/Ok.app", 0, ""));
+        let mut c = ctx(MockRunner::new(&[]));
+        c.runner = m.clone();
+        let mut s = step("ok", false);
+        s.update.app_path = Some("/Applications/Ok.app".into());
+        let (h, p) = hist();
+        let providers: Vec<Box<dyn Provider>> = vec![Box::new(Fake)];
+        execute(&c, &providers, std::slice::from_ref(&s), false, &Control::default(), &h, &|_| {});
+        assert!(!m.calls.lock().unwrap().iter().any(|k| k.starts_with("xattr")), "off by default");
+        c.config.strip_quarantine = true;
+        m.responses.lock().unwrap().insert("fake-ver ok".into(), VecDeque::from([RunResult { out: "1.0".into(), ..Default::default() }, RunResult { out: "2.0".into(), ..Default::default() }]));
+        execute(&c, &providers, std::slice::from_ref(&s), false, &Control::default(), &h, &|_| {});
+        assert!(m.calls.lock().unwrap().iter().any(|k| k == "xattr -dr com.apple.quarantine /Applications/Ok.app"));
         let _ = std::fs::remove_file(p);
     }
 

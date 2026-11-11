@@ -188,6 +188,7 @@ pub fn parse(info: &Value, outdated: &Value, res: &mut ScanResult) {
         };
         if let Some(a) = app {
             u.notes.push(format!("replaces /Applications/{a}; quit the app first"));
+            u.app_path = Some(format!("/Applications/{a}"));
         }
         if admin {
             u.notes.push("installer package: needs administrator password".into());

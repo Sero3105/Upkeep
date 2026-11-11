@@ -36,6 +36,9 @@ pub struct Config {
     pub command_timeout: u64,
     /// Rebuild Upkeep on launch when its sources/upstream changed.
     pub auto_self_update: bool,
+    /// Remove `com.apple.quarantine` from apps Homebrew just upgraded, so macOS doesn't ask
+    /// "downloaded from the internet" on first launch. Off by default: it skips that Gatekeeper check.
+    pub strip_quarantine: bool,
 }
 
 impl Default for Config {
@@ -48,6 +51,7 @@ impl Default for Config {
             check_appcasts: true,
             command_timeout: 1800,
             auto_self_update: true,
+            strip_quarantine: false,
         }
     }
 }

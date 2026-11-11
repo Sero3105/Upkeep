@@ -145,6 +145,7 @@ fn plan_update(a: &App, cast: Option<Cast>, entry: Option<&Entry>, cask_owned: b
             let mut u = base(e.version.clone(), "Homebrew cask");
             u.command = super::argv(&["brew", "upgrade", "--cask", "--greedy", &e.token]);
             u.cask = Some(e.token.clone());
+            u.app_path = Some(a.path.clone());
             u.requires_admin = e.pkg;
             u.hint = Some("Homebrew cannot downgrade casks: rollback not available.".into());
             return (Some(u), None);
@@ -175,6 +176,7 @@ fn plan_update(a: &App, cast: Option<Cast>, entry: Option<&Entry>, cask_owned: b
                 // Installer packages can't be swapped bundle-by-bundle: let brew run the vendor .pkg.
                 u.command = super::argv(&["brew", "install", "--cask", "--force", &e.token]);
                 u.requires_admin = true;
+                u.app_path = Some(a.path.clone());
                 u.notes.push("installer package: the app becomes Homebrew-managed".into());
             } else {
                 (u.command, u.rollback) = install(&format!("cask:{}", e.token));
