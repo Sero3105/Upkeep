@@ -364,7 +364,15 @@ impl App {
     pub fn settings_rows(&self) -> Vec<(String, bool, String)> {
         let c = &self.ctx.config;
         let mut v = vec![
-            ("Install several at once".to_string(), c.parallel, "Faster: different package managers work at the same time".to_string()),
+            (
+                "Install several at once".to_string(),
+                c.parallel,
+                format!(
+                    "Faster: updates start without waiting their turn, up to {} at once ({}); downloads start early",
+                    crate::executor::job_limit(c, 0),
+                    if c.jobs > 0 { "set by `jobs` in config.json" } else { "from your CPU cores and current load" }
+                ),
+            ),
             ("Refresh version lists first".to_string(), c.refresh_indexes, "Runs `brew update` before checking; installs nothing".to_string()),
             ("Check apps online".to_string(), c.check_appcasts, "Ask app vendors and Homebrew for newer versions of your apps".to_string()),
             ("Keep Upkeep up to date".to_string(), c.auto_self_update, "When Upkeep starts, rebuild it if its source code changed".to_string()),

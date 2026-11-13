@@ -465,12 +465,12 @@ pub fn run_in_terminal(ctx: &Ctx, reg: &[Box<dyn Provider>], steps: &[planner::S
     if steps.iter().any(|s| s.update.requires_admin) {
         println!("{}", yellow("Some steps use sudo: type your password when asked."));
     }
-    println!("{}", dim("Ctrl-C stops after the current step."));
+    println!("{}", dim(format!("Up to {} updates at once (downloads start early). Ctrl-C stops after the running steps.", executor::job_limit(&ctx.config, 0))));
     let names: Vec<String> = steps.iter().map(|s| s.update.name.clone()).collect();
     let n = steps.len();
     let events = |e: Event| match e {
         Event::Started(i) => println!("\n{} [{}/{n}] {}", cyan("▶"), i + 1, bold(&names[i])),
-        Event::Line(_, l) => println!("    {}", dim(l)),
+        Event::Line(i, l) => println!("    {} {}", dim(format!("{}:", names[i])), dim(&l)),
         Event::Finished(i, o) => println!("  {} {} — {}", icon(&o), names[i], o.detail()),
     };
     let out = executor::execute(ctx, reg, steps, true, &Control::default(), &History::open(), &events);
