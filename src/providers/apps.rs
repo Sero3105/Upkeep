@@ -144,6 +144,7 @@ fn plan_update(a: &App, cast: Option<Cast>, entry: Option<&Entry>, cask_owned: b
         if version::is_newer(&e.version, &a.short) {
             let mut u = base(e.version.clone(), "Homebrew cask");
             u.command = super::argv(&["brew", "upgrade", "--cask", "--greedy", &e.token]);
+            u.prefetch = super::argv(&["brew", "fetch", "--cask", &e.token]);
             u.cask = Some(e.token.clone());
             u.app_path = Some(a.path.clone());
             u.requires_admin = e.pkg;
@@ -159,6 +160,7 @@ fn plan_update(a: &App, cast: Option<Cast>, entry: Option<&Entry>, cask_owned: b
         match c.url.filter(|u| supported_archive(u)) {
             Some(url) => {
                 (u.command, u.rollback) = install(&url);
+                u.independent = true;
                 u.requires_admin = admin;
                 u.hint = Some("Downloaded from the vendor feed; installed only if signed by the same developer and accepted by Gatekeeper.".into());
             }
@@ -175,11 +177,13 @@ fn plan_update(a: &App, cast: Option<Cast>, entry: Option<&Entry>, cask_owned: b
             if e.pkg {
                 // Installer packages can't be swapped bundle-by-bundle: let brew run the vendor .pkg.
                 u.command = super::argv(&["brew", "install", "--cask", "--force", &e.token]);
+                u.prefetch = super::argv(&["brew", "fetch", "--cask", &e.token]);
                 u.requires_admin = true;
                 u.app_path = Some(a.path.clone());
                 u.notes.push("installer package: the app becomes Homebrew-managed".into());
             } else {
                 (u.command, u.rollback) = install(&format!("cask:{}", e.token));
+                u.independent = true;
                 u.requires_admin = admin;
                 u.hint = Some("Vendor download via Homebrew (checksum), then same-developer + Gatekeeper checks.".into());
             }

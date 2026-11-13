@@ -154,6 +154,7 @@ pub fn parse(info: &Value, outdated: &Value, res: &mut ScanResult) {
             source: "Homebrew formula".into(),
             support: Support::Supported,
             command: argv(&["brew", "upgrade", "--formula", &name]),
+            prefetch: argv(&["brew", "fetch", "--formula", &name]),
             hint: Some("Homebrew cannot downgrade: rollback not available.".into()),
             dependencies: deps.get(&name).cloned().unwrap_or_default().into_iter().filter(|d| deps.contains_key(d)).collect(),
             dependents: dependents.get(name.as_str()).cloned().unwrap_or_default(),
@@ -182,6 +183,7 @@ pub fn parse(info: &Value, outdated: &Value, res: &mut ScanResult) {
             source: "Homebrew cask".into(),
             support: Support::Supported,
             command: argv(&["brew", "upgrade", "--cask", &name]),
+            prefetch: argv(&["brew", "fetch", "--cask", &name]),
             hint: Some("Homebrew cannot downgrade casks: rollback not available.".into()),
             requires_admin: admin,
             ..Default::default()

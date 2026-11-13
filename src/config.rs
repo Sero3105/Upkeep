@@ -26,8 +26,11 @@ pub struct Config {
     pub disabled_providers: Vec<String>,
     /// Update ids ("homebrew:node") or bare names never offered.
     pub excluded: Vec<String>,
-    /// Run independent package managers concurrently (never two ops on the same one).
+    /// Run updates concurrently: each starts as soon as what it depends on is done, and
+    /// downloads start ahead of installs. Steps sharing a tool's lock never overlap.
     pub parallel: bool,
+    /// Most updates at once. 0 = automatic, from CPU cores and current load.
+    pub jobs: usize,
     /// `brew update` before checking. Refreshes metadata only, installs nothing.
     pub refresh_indexes: bool,
     /// Read Sparkle appcasts (HTTPS) of self-updating apps.
@@ -47,6 +50,7 @@ impl Default for Config {
             disabled_providers: vec![],
             excluded: vec![],
             parallel: true,
+            jobs: 0,
             refresh_indexes: true,
             check_appcasts: true,
             command_timeout: 1800,

@@ -63,7 +63,8 @@ pub struct Step {
     pub reasons: Vec<String>,
     /// Added automatically because a selected update needs it.
     pub linked_by: Option<String>,
-    /// Steps of one stage may run in parallel across providers; stages run in order.
+    /// Depth in the provider `after` graph: groups the plan for display. The executor schedules
+    /// on the finer per-step dependency graph.
     pub stage: usize,
 }
 

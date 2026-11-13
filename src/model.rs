@@ -107,6 +107,14 @@ pub struct Update {
     /// App bundle a Homebrew cask command (re)installs: quarantine is stripped from it when enabled.
     #[serde(default)]
     pub app_path: Option<String>,
+    /// Download-only argv the executor may run early, alongside anything else, so the
+    /// install itself only has to unpack (`brew fetch`). Failure is harmless: the install downloads.
+    #[serde(default)]
+    pub prefetch: Option<Vec<String>>,
+    /// Touches only its own files: may run alongside other steps that use the same tool.
+    /// Otherwise steps sharing a tool (brew, npm, pip…) run one at a time, as their locks require.
+    #[serde(default)]
+    pub independent: bool,
 }
 
 impl Update {

@@ -1,5 +1,9 @@
-//! Runs an Update Plan. Steps of one provider always run one after another; different
-//! providers of the same stage may run in parallel. Every result is verified by re-reading
+//! Runs an Update Plan. Each step starts as soon as the steps it depends on are done (its
+//! package dependencies, its manager's self-update, providers it must run `after`), up to a
+//! job limit derived from CPU cores and current load. Steps that share a tool (brew, npm, pip…)
+//! never overlap, because those tools lock or corrupt shared state; their downloads (`prefetch`)
+//! run ahead in parallel instead, so the serialized part is mostly unpacking. Admin steps in a
+//! terminal run alone so the `sudo` prompt is readable. Every result is verified by re-reading
 //! the installed version: an exit code 0 alone is never reported as "updated".
 
 use crate::config;
@@ -8,9 +12,9 @@ use crate::planner::Step;
 use crate::providers::Provider;
 use crate::shell::{CancelToken, Ctx, RunOpts, RunResult};
 use crate::version;
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 /// Set by the CLI's SIGINT handler.
@@ -60,12 +64,14 @@ pub struct Control {
     abort: AtomicBool,
     skip: Mutex<HashSet<usize>>,
     running: Mutex<HashMap<usize, CancelToken>>,
+    fetching: Mutex<HashMap<usize, CancelToken>>,
 }
 
 impl Control {
-    /// Controlled stop: the running step finishes, nothing new starts.
+    /// Controlled stop: running steps finish, nothing new starts, downloads ahead are dropped.
     pub fn abort(&self) {
-        self.abort.store(true, Ordering::SeqCst)
+        self.abort.store(true, Ordering::SeqCst);
+        self.fetching.lock().unwrap().values().for_each(CancelToken::cancel);
     }
     pub fn aborted(&self) -> bool {
         self.abort.load(Ordering::SeqCst) || INTERRUPTED.load(Ordering::SeqCst)
@@ -76,10 +82,92 @@ impl Control {
         if let Some(t) = self.running.lock().unwrap().get(&i) {
             t.cancel();
         }
+        if let Some(t) = self.fetching.lock().unwrap().get(&i) {
+            t.cancel();
+        }
     }
     fn skipped(&self, i: usize) -> bool {
         self.skip.lock().unwrap().contains(&i)
     }
+}
+
+/// Upper bound for the automatic job limit: past this, more parallel downloads just split the
+/// same bandwidth.
+const MAX_AUTO_JOBS: usize = 8;
+
+/// How many steps may run at once. `running` = steps of ours already running, so our own
+/// work doesn't count as somebody else's load.
+pub fn job_limit(cfg: &config::Config, running: usize) -> usize {
+    if !cfg.parallel {
+        return 1;
+    }
+    if cfg.jobs > 0 {
+        return cfg.jobs;
+    }
+    let cores = std::thread::available_parallelism().map_or(2, |n| n.get());
+    let busy = load_avg().map_or(0.0, |l| (l - running as f64).max(0.0));
+    let free = (cores as f64 - busy).floor().max(0.0) as usize;
+    free.clamp(2, cores.clamp(2, MAX_AUTO_JOBS))
+}
+
+/// 1-minute load average.
+fn load_avg() -> Option<f64> {
+    let mut l = [0f64; 3];
+    (unsafe { libc::getloadavg(l.as_mut_ptr(), 3) } >= 1).then_some(l[0])
+}
+
+/// The program a command runs (`sudo x` → `x`, paths → basename): steps sharing it share its lock.
+fn tool(cmd: Option<&Vec<String>>) -> String {
+    let c = cmd.map(Vec::as_slice).unwrap_or_default();
+    let c = if c.first().is_some_and(|s| s == "sudo") { &c[1..] } else { c };
+    c.first().map(|s| s.rsplit('/').next().unwrap_or(s).to_string()).unwrap_or_default()
+}
+
+/// For each step, the earlier steps it must wait for. Only earlier indices: the plan is already
+/// topologically ordered, and this keeps the graph acyclic whatever the input.
+fn dependencies(providers: &[Box<dyn Provider>], steps: &[Step]) -> Vec<Vec<usize>> {
+    let after: HashMap<&str, &[&str]> = providers.iter().map(|p| (p.id(), p.after())).collect();
+    // Transitive: npm after homebrew after X still waits for X when homebrew has no steps.
+    let before = |p: &str| {
+        let mut seen: HashSet<&str> = HashSet::new();
+        let mut todo: Vec<&str> = after.get(p).copied().unwrap_or_default().to_vec();
+        while let Some(x) = todo.pop() {
+            if seen.insert(x) {
+                todo.extend(after.get(x).copied().unwrap_or_default());
+            }
+        }
+        seen
+    };
+    steps
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            let u = &s.update;
+            let pre = before(&u.provider);
+            (0..i)
+                .filter(|&j| {
+                    let t = &steps[j].update;
+                    if t.provider == u.provider {
+                        t.is_self_update || u.dependencies.contains(&t.name)
+                    } else {
+                        pre.contains(t.provider.as_str())
+                    }
+                })
+                .collect()
+        })
+        .collect()
+}
+
+#[derive(Default)]
+struct Sched {
+    pending: Vec<bool>,
+    done: Vec<bool>,
+    /// Prefetch finished (or not needed): the install may start.
+    fetched: Vec<bool>,
+    tools: HashMap<String, usize>,
+    running: usize,
+    /// An admin step owns the terminal.
+    exclusive: bool,
 }
 
 pub fn execute(
@@ -91,32 +179,125 @@ pub fn execute(
     hist: &History,
     events: &(dyn Fn(Event) + Sync),
 ) -> Vec<Outcome> {
-    let outcomes: Mutex<Vec<Outcome>> = Mutex::new(vec![Outcome::NotRun; steps.len()]);
-    let mut stages: BTreeMap<usize, BTreeMap<&str, Vec<usize>>> = BTreeMap::new();
-    for (i, s) in steps.iter().enumerate() {
-        stages.entry(s.stage).or_default().entry(s.update.provider.as_str()).or_default().push(i);
-    }
-    let lane = |idx: &Vec<usize>| {
-        for &i in idx {
+    let n = steps.len();
+    let outcomes: Mutex<Vec<Outcome>> = Mutex::new(vec![Outcome::NotRun; n]);
+    let deps = dependencies(providers, steps);
+    let tools: Vec<String> = steps.iter().map(|s| tool(s.update.command.as_ref())).collect();
+    let parallel = ctx.config.parallel;
+    let prefetch: Vec<usize> = if parallel { (0..n).filter(|&i| steps[i].update.prefetch.is_some()).collect() } else { vec![] };
+    let st = Mutex::new(Sched {
+        pending: vec![true; n],
+        done: vec![false; n],
+        fetched: (0..n).map(|i| !prefetch.contains(&i)).collect(),
+        ..Default::default()
+    });
+    let cv = Condvar::new();
+    let solo = |i: usize| interactive && steps[i].update.requires_admin;
+
+    // Next step allowed to start now, in plan order.
+    let ready = |s: &Sched, i: usize| {
+        if !s.pending[i] || s.exclusive || !deps[i].iter().all(|&j| s.done[j]) {
+            return false;
+        }
+        if control.skipped(i) {
+            return true; // resolves immediately, no slot needed
+        }
+        let free_tool = steps[i].update.independent || s.tools.get(&tools[i]).copied().unwrap_or(0) == 0;
+        s.fetched[i] && free_tool && (!solo(i) || s.running == 0)
+    };
+
+    let worker = || {
+        loop {
+            let i = {
+                let mut s = st.lock().unwrap();
+                loop {
+                    if control.aborted() || !s.pending.contains(&true) {
+                        cv.notify_all();
+                        return;
+                    }
+                    let room = s.running < job_limit(&ctx.config, s.running);
+                    if let Some(i) = (0..n).find(|&i| ready(&s, i) && (room || control.skipped(i))) {
+                        s.pending[i] = false;
+                        s.running += 1;
+                        *s.tools.entry(tools[i].clone()).or_default() += 1;
+                        s.exclusive = solo(i);
+                        break i;
+                    }
+                    // Timeout: load average and abort flags change without a notification.
+                    s = cv.wait_timeout(s, Duration::from_millis(500)).unwrap().0;
+                }
+            };
             let o = run_step(ctx, providers, &steps[i], i, interactive, control, hist, events);
             outcomes.lock().unwrap()[i] = o;
+            let mut s = st.lock().unwrap();
+            s.done[i] = true;
+            s.running -= 1;
+            *s.tools.get_mut(&tools[i]).unwrap() -= 1;
+            if solo(i) {
+                s.exclusive = false;
+            }
+            cv.notify_all();
         }
     };
-    for (_, lanes) in stages {
-        if control.aborted() {
-            break;
+
+    let next_fetch = AtomicUsize::new(0);
+    let fetcher = || {
+        while let Some(&i) = prefetch.get(next_fetch.fetch_add(1, Ordering::SeqCst)) {
+            if !control.aborted() && !control.skipped(i) {
+                fetch(ctx, &steps[i], i, control, events);
+            }
+            st.lock().unwrap().fetched[i] = true;
+            cv.notify_all();
         }
-        if ctx.config.parallel && lanes.len() > 1 {
-            std::thread::scope(|s| {
-                for idx in lanes.values() {
-                    s.spawn(move || lane(idx));
-                }
-            });
-        } else {
-            lanes.values().for_each(lane);
+    };
+
+    // Enough threads for the highest limit; `job_limit` decides, live, how many actually work.
+    let workers = match (parallel, ctx.config.jobs) {
+        (false, _) => 1,
+        (true, 0) => MAX_AUTO_JOBS,
+        (true, j) => j,
+    };
+    let fetchers = job_limit(&ctx.config, 0).min(prefetch.len());
+    std::thread::scope(|s| {
+        for _ in 0..fetchers {
+            s.spawn(fetcher);
         }
-    }
+        for _ in 0..workers.min(n.max(1)) {
+            s.spawn(worker);
+        }
+    });
     outcomes.into_inner().unwrap()
+}
+
+/// Download ahead of the install. Errors are only noted: the install downloads by itself.
+fn fetch(ctx: &Ctx, step: &Step, i: usize, control: &Control, events: &(dyn Fn(Event) + Sync)) {
+    let Some(cmd) = &step.update.prefetch else { return };
+    let token = CancelToken::default();
+    control.fetching.lock().unwrap().insert(i, token.clone());
+    let argv: Vec<&str> = cmd.iter().map(String::as_str).collect();
+    let r = ctx.runner.run(
+        &argv,
+        &RunOpts { timeout: Duration::from_secs(ctx.config.command_timeout), env: tool_env(&step.update.provider, cmd), cancel: Some(token), ..Default::default() },
+    );
+    control.fetching.lock().unwrap().remove(&i);
+    if r.cancelled {
+        return;
+    }
+    if r.ok() {
+        events(Event::Line(i, "downloaded ahead of install".into()));
+    } else {
+        config::log(&format!("prefetch failed: {}: {}", cmd.join(" "), explain(&r)));
+        events(Event::Line(i, "download ahead failed; the install will download it".into()));
+    }
+}
+
+/// Keep Homebrew from refreshing its index (or printing hints) on every command.
+fn tool_env(provider: &str, cmd: &[String]) -> Vec<(&'static str, &'static str)> {
+    if provider == "homebrew" || cmd.first().is_some_and(|c| c == "brew") {
+        vec![("HOMEBREW_NO_AUTO_UPDATE", "1"), ("HOMEBREW_NO_ENV_HINTS", "1")]
+    } else {
+        vec![]
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -190,7 +371,7 @@ fn run_step(
     config::log(&format!("run: {}", cmd.join(" ")));
     let started = Instant::now();
     let argv: Vec<&str> = cmd.iter().map(String::as_str).collect();
-    let env = if u.provider == "homebrew" { vec![("HOMEBREW_NO_AUTO_UPDATE", "1"), ("HOMEBREW_NO_ENV_HINTS", "1")] } else { vec![] };
+    let env = tool_env(&u.provider, &cmd);
     let r = ctx.runner.run(
         &argv,
         &RunOpts {
@@ -412,6 +593,126 @@ mod tests {
         execute(&c, &providers, std::slice::from_ref(&s), false, &Control::default(), &h, &|_| {});
         assert!(m.calls.lock().unwrap().iter().any(|k| k == "xattr -dr com.apple.quarantine /Applications/Ok.app"));
         let _ = std::fs::remove_file(p);
+    }
+
+    /// Records which commands overlap in time. Every command takes 40ms.
+    #[derive(Default)]
+    struct Timeline {
+        live: Mutex<Vec<String>>,
+        overlaps: Mutex<Vec<(String, String)>>,
+        order: Mutex<Vec<String>>,
+    }
+    impl crate::shell::Runner for Timeline {
+        fn run(&self, argv: &[&str], _: &RunOpts) -> RunResult {
+            let key = argv.join(" ");
+            if argv[0] == "fake-ver" {
+                return RunResult { out: "1.0".into(), ..Default::default() };
+            }
+            {
+                let mut live = self.live.lock().unwrap();
+                self.overlaps.lock().unwrap().extend(live.iter().map(|o| (o.clone(), key.clone())));
+                live.push(key.clone());
+                self.order.lock().unwrap().push(key.clone());
+            }
+            std::thread::sleep(Duration::from_millis(40));
+            self.live.lock().unwrap().retain(|k| *k != key);
+            RunResult::default()
+        }
+        fn which(&self, _: &str) -> Option<String> {
+            None
+        }
+    }
+
+    fn timed(steps: &[Step], jobs: usize) -> std::sync::Arc<Timeline> {
+        let t = std::sync::Arc::new(Timeline::default());
+        let mut c = ctx(MockRunner::new(&[]));
+        c.runner = t.clone();
+        c.config.jobs = jobs;
+        let (h, p) = hist();
+        let providers: Vec<Box<dyn Provider>> = vec![Box::new(Fake)];
+        execute(&c, &providers, steps, false, &Control::default(), &h, &|_| {});
+        let _ = std::fs::remove_file(p);
+        t
+    }
+
+    fn overlap(t: &Timeline, a: &str, b: &str) -> bool {
+        t.overlaps.lock().unwrap().iter().any(|(x, y)| (x.contains(a) && y.contains(b)) || (x.contains(b) && y.contains(a)))
+    }
+
+    #[test]
+    fn same_tool_never_overlaps_but_downloads_and_independent_steps_do() {
+        let mut steps: Vec<Step> = ["a", "b", "c"].iter().map(|n| step(n, false)).collect();
+        for s in &mut steps {
+            s.update.prefetch = Some(vec!["fake-fetch".into(), s.update.name.clone()]);
+        }
+        let mut x = step("x", false);
+        x.update.command = Some(vec!["/bin/app-install".into(), "x".into()]);
+        x.update.independent = true;
+        let mut y = x.clone();
+        y.update.name = "y".into();
+        y.update.command = Some(vec!["/bin/app-install".into(), "y".into()]);
+        steps.extend([x, y]);
+        let t = timed(&steps, 4);
+        assert!(!overlap(&t, "fake-up a", "fake-up b") && !overlap(&t, "fake-up b", "fake-up c") && !overlap(&t, "fake-up a", "fake-up c"), "one brew-like tool at a time");
+        assert!(overlap(&t, "fake-fetch", "fake-fetch"), "downloads run side by side");
+        assert!(overlap(&t, "app-install x", "app-install y"), "independent steps run side by side");
+        let order = t.order.lock().unwrap();
+        let at = |k: &str| order.iter().position(|o| o == k).unwrap();
+        for n in ["a", "b", "c"] {
+            assert!(at(&format!("fake-fetch {n}")) < at(&format!("fake-up {n}")), "install waits for its download");
+        }
+    }
+
+    #[test]
+    fn serial_when_parallel_is_off() {
+        let mut x = step("x", false);
+        x.update.independent = true;
+        let mut y = x.clone();
+        y.update.name = "y".into();
+        y.update.command = Some(vec!["fake-up".into(), "y".into()]);
+        let t = std::sync::Arc::new(Timeline::default());
+        let mut c = ctx(MockRunner::new(&[]));
+        c.runner = t.clone();
+        c.config.parallel = false;
+        let (h, p) = hist();
+        let providers: Vec<Box<dyn Provider>> = vec![Box::new(Fake)];
+        execute(&c, &providers, &[x, y], false, &Control::default(), &h, &|_| {});
+        assert!(t.overlaps.lock().unwrap().is_empty());
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn dependency_graph() {
+        let reg = crate::providers::registry();
+        let mk = |p: &str, n: &str| {
+            let mut s = step(n, false);
+            s.update.provider = p.into();
+            s
+        };
+        let mut glib = mk("homebrew", "glib");
+        glib.update.dependencies = vec!["pcre2".into()];
+        let mut npm = mk("npm", "npm");
+        npm.update.is_self_update = true;
+        let steps = vec![mk("homebrew", "pcre2"), glib, mk("homebrew", "gh"), npm, mk("npm", "typescript"), mk("mas", "Xcode")];
+        let d = dependencies(&reg, &steps);
+        assert_eq!(d[1], vec![0], "glib waits for pcre2");
+        assert!(d[2].is_empty(), "gh waits for nobody");
+        assert_eq!(d[3], vec![0, 1, 2], "npm runs after homebrew");
+        assert_eq!(d[4], vec![0, 1, 2, 3], "packages wait for the manager's self-update");
+        assert!(d[5].is_empty());
+        assert_eq!(tool(Some(&vec!["sudo".into(), "softwareupdate".into()])), "softwareupdate");
+        assert_eq!(tool(Some(&vec!["/Library/x/msupdate".into()])), "msupdate");
+    }
+
+    #[test]
+    fn job_limit_respects_settings() {
+        let mut c = config::Config::default();
+        let auto = job_limit(&c, 0);
+        assert!((2..=MAX_AUTO_JOBS).contains(&auto));
+        c.jobs = 3;
+        assert_eq!(job_limit(&c, 0), 3);
+        c.parallel = false;
+        assert_eq!(job_limit(&c, 0), 1);
     }
 
     #[test]
