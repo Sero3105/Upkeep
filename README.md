@@ -178,8 +178,13 @@ flowchart LR
    - Package managers are grouped into stages: `npm`, `pip` and `gem` run after `homebrew`,
      because it may replace the runtime they use.
    - Inside one manager: self-update first, then dependencies before dependents.
-   - Different managers in the same stage may run in parallel. One manager never runs
-     two operations at once.
+   - Each step starts as soon as what it depends on is done: it never waits for an
+     unrelated step listed above it. Up to N run at once, where N comes from your CPU
+     cores and current load (2–8; set `"jobs": N` in `config.json` to fix it).
+   - Homebrew downloads (`brew fetch`) start right away, side by side, so the install
+     itself mostly unpacks. Vendor app downloads run fully in parallel.
+   - Steps that share a tool (`brew`, `npm`, `pip`…) never overlap: those tools lock or
+     share state. Steps needing your password run alone, so the `sudo` prompt stays readable.
 4. **Risk.**
    - **High:** needs admin, needs a restart, or a minor/major jump of a language runtime.
    - **Medium:** major version, 5 or more installed dependents, deprecated, a downgrade
